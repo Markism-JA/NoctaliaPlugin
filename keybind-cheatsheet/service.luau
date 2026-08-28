@@ -28,8 +28,12 @@ local function tr(key, values)
 end
 
 local function trim(s)
-  if not s then return "" end
-  return s:match("^%s*(.-)%s*$") or ""
+  if not s or s == "" then
+      return ""
+  end
+
+  local from = s:match("^%s*()")
+  return from > #s and "" or s:match(".*%S", from)
 end
 
 local function lower(s)
@@ -173,12 +177,14 @@ local function bindingIdentity(binding)
   }, "|")
 end
 
-local function addBinding(target, binding)
-  binding.description = trim(binding.description)
-  binding.category = trim(binding.category)
+local function addBinding(target, binding, skipTrim)
+  if not skipTrim then
+    binding.description = trim(binding.description)
+    binding.category = trim(binding.category)
+    binding.action = trim(binding.action)
+    binding.key = trim(binding.key)
+  end
   binding.baseCategory = binding.category
-  binding.action = trim(binding.action)
-  binding.key = trim(binding.key)
   binding.modifiers = binding.modifiers or {}
   binding.id = bindingIdentity(binding)
   table.insert(target, binding)
@@ -187,6 +193,47 @@ end
 -- ============================================================================
 -- Fast Heuristic Category Fallbacks
 -- ============================================================================
+
+local DISPATCHER_MAP = {
+  killactive = "Window Management & Placement",
+  closewindow = "Window Management & Placement",
+  togglefloating = "Window Management & Placement",
+  fullscreen = "Window Management & Placement",
+  movefocus = "Focus & Navigation",
+  focuswindow = "Focus & Navigation",
+  cyclenext = "Focus & Navigation",
+  focusmonitor = "Focus & Navigation",
+  workspace = "Workspaces & Scratchpads",
+  movetoworkspace = "Workspaces & Scratchpads",
+  movetoworkspacesilent = "Workspaces & Scratchpads",
+  togglespecialworkspace = "Workspaces & Scratchpads",
+  submap = "Submaps & Modes: VM Passthrough",
+}
+
+local function fallbackCategory(dispatcher, arg, desc)
+  local direct = DISPATCHER_MAP[dispatcher]
+  if direct then return direct end
+
+  local s = lower(desc)
+  if s == "" then return "Other" end
+  if s:find("launch", 1, true) or s:find("terminal", 1, true) or s:find("browser", 1, true) then
+    return "Applications & Launchers"
+  end
+  if s:find("toggle", 1, true) or s:find("control center", 1, true) or s:find("bar", 1, true) then
+    return "Shell & Desktop Controls"
+  end
+  if s:find("layout", 1, true) or s:find("master", 1, true) or s:find("dwindle", 1, true) then
+    return "Workspace Layouts"
+  end
+  if s:find("brightness", 1, true) or s:find("volume", 1, true) or s:find("media", 1, true) then
+    return "Media & Hardware"
+  end
+  if s:find("screen", 1, true) or s:find("ocr", 1, true) or s:find("annotate", 1, true) then
+    return "Screen Toolkit & Capture Utilities"
+  end
+  return "Other"
+end
+
 local function fallbackCategory(dispatcher, arg, desc)
   local d = lower(dispatcher or "")
   local a = lower(arg or "")
@@ -313,23 +360,33 @@ local function scanHyprLua(rootPath)
 end
 
 local function modifiersFromMask(mask)
-  local result = {}
-  local bits = {
-    { 1, "SHIFT" }, { 4, "CTRL" }, { 8, "ALT" }, { 16, "MOD2" },
-    { 32, "MOD3" }, { 64, "SUPER" }, { 128, "MOD5" },
-  }
   mask = tonumber(mask) or 0
-  for _, entry in ipairs(bits) do
-    if math.floor(mask / entry[1]) % 2 == 1 then table.insert(result, entry[2]) end
+  if mask == 0 then return {} end
+
+  local res = {}
+  if bit32 and bit32.band then
+    if bit32.band(mask, 64) ~= 0 then table.insert(res, "SUPER") end
+    if bit32.band(mask, 4)  ~= 0 then table.insert(res, "CTRL") end
+    if bit32.band(mask, 1)  ~= 0 then table.insert(res, "SHIFT") end
+    if bit32.band(mask, 8)  ~= 0 then table.insert(res, "ALT") end
+    if bit32.band(mask, 16) ~= 0 then table.insert(res, "MOD2") end
+    if bit32.band(mask, 32) ~= 0 then table.insert(res, "MOD3") end
+    if bit32.band(mask, 128) ~= 0 then table.insert(res, "MOD5") end
+  else
+    if math.floor(mask / 64) % 2 == 1 then table.insert(res, "SUPER") end
+    if math.floor(mask / 4)  % 2 == 1 then table.insert(res, "CTRL") end
+    if math.floor(mask / 1)  % 2 == 1 then table.insert(res, "SHIFT") end
+    if math.floor(mask / 8)  % 2 == 1 then table.insert(res, "ALT") end
+    if math.floor(mask / 16) % 2 == 1 then table.insert(res, "MOD2") end
+    if math.floor(mask / 32) % 2 == 1 then table.insert(res, "MOD3") end
+    if math.floor(mask / 128) % 2 == 1 then table.insert(res, "MOD5") end
   end
-  return result
+  return res
 end
 
 local function parseHyprJson(raw, scanContext)
   local decoded, err = noctalia.json.decode(raw)
-  if type(decoded) ~= "table" then
-    return nil, err or "Invalid hyprctl JSON"
-  end
+  if type(decoded) ~= "table" then return nil, err or "Invalid hyprctl JSON" end
   local result = {}
   local exactRules = scanContext.exactRules or {}
 
@@ -342,6 +399,7 @@ local function parseHyprJson(raw, scanContext)
       end
       local dispatcher = entry.dispatcher or ""
       local argument = entry.arg or ""
+
       if key ~= "" and dispatcher ~= "" then
         local bType = entry.mouse == true and "bindm" or "bind"
         local submap = entry.submap or ""
@@ -355,18 +413,21 @@ local function parseHyprJson(raw, scanContext)
           category = fallbackCategory(dispatcher, argument, description)
         end
 
+        -- Direct string construction without regex trim
+        local action = argument ~= "" and (dispatcher .. " " .. argument) or dispatcher
+
         addBinding(result, {
           compositor = "hyprland",
           bindingType = bType,
           modifiers = modifiers,
           key = key,
-          action = trim(dispatcher .. " " .. argument),
+          action = action,
           description = description,
           category = category,
           sourceFile = "hyprctl binds -j",
           sourceLine = 0,
           submap = submap,
-        })
+        }, true) -- Pass 'true' to signal pre-sanitized input
       end
     end
   end
