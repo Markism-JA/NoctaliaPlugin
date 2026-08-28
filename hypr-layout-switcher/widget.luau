@@ -20,7 +20,7 @@ local current = noctalia.state.get("layout") or "dwindle"
 
 local function render()
   barWidget.setGlyph(glyphs[current] or "layout-grid")
-  barWidget.setText(labels[current] or current:sub(1, 3):upper())
+barWidget.setText(string.format("%-4s", labels[current] or current:sub(1, 3):upper()))
 end
 
 noctalia.state.watch("layout", function(value)
