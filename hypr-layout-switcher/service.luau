@@ -2,9 +2,9 @@
 
 local layouts = { "dwindle", "master", "monocle", "scrolling" }
 
-noctalia.setUpdateInterval(1000)
+noctalia.setUpdateInterval(300)
 
-local lastLayout = nil
+local lastLayout = noctalia.state.get("layout")
 
 local function setLayoutCmd(layout)
   local lua = string.format(
@@ -21,14 +21,14 @@ local function poll()
     return
   end
   noctalia.runAsync("hyprctl activeworkspace -j", function(result)
-    if result.exitCode ~= 0 then
+    if result.exitCode ~= 0 or not result.stdout or result.stdout == "" then
       return
     end
     local data = noctalia.json.decode(result.stdout)
     if data == nil then
       return
     end
-    local layout = data.tiledLayout
+    local layout = data.tiledLayout or data.layout
     if layout and layout ~= lastLayout then
       lastLayout = layout
       noctalia.state.set("layout", layout)
@@ -37,14 +37,16 @@ local function poll()
 end
 
 local function cycle()
+  local current = lastLayout or noctalia.state.get("layout") or "dwindle"
   local idx = 1
   for i, l in ipairs(layouts) do
-    if l == lastLayout then
+    if l == current then
       idx = (i % #layouts) + 1
       break
     end
   end
   local nextLayout = layouts[idx]
+
   noctalia.runAsync(setLayoutCmd(nextLayout))
   lastLayout = nextLayout
   noctalia.state.set("layout", nextLayout)
@@ -61,4 +63,3 @@ function update()
 end
 
 poll()
-
