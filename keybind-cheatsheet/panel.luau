@@ -48,9 +48,11 @@ local function tr(key, values)
   return noctalia.tr(key, values)
 end
 
-local function trim(value)
-  local result = (value or ""):gsub("^%s+", ""):gsub("%s+$", "")
-  return result
+-- Fast O(N) Two-Point Boundary Trim
+local function trim(s)
+  if not s or s == "" then return "" end
+  local from = s:match("^%s*()")
+  return from > #s and "" or s:match(".*%S", from)
 end
 
 local function lower(value)
@@ -126,6 +128,16 @@ local KEY_LABELS = {
   btn_extra = "Mouse Extra",
 }
 
+local MODIFIER_DISPLAY = {
+  SUPER = "Super",
+  CTRL = "Ctrl",
+  SHIFT = "Shift",
+  ALT = "Alt",
+  MOD2 = "Mod2",
+  MOD3 = "Mod3",
+  MOD5 = "Mod5",
+}
+
 local function formatKey(key)
   if key == nil or key == "" then return "" end
   local exact = KEY_LABELS[key]
@@ -161,9 +173,8 @@ end
 
 local function normalizePreferences(decoded)
   local result = { version = 1, hidden = {}, descriptions = {}, colors = {} }
-  if type(decoded) ~= "table" then
-    return result
-  end
+  if type(decoded) ~= "table" then return result end
+
   for id, hidden in pairs(type(decoded.hidden) == "table" and decoded.hidden or {}) do
     if type(id) == "string" and hidden == true then
       result.hidden[id] = true
@@ -210,6 +221,16 @@ local function savePreferences()
   end
 end
 
+-- Pre-indexes search tokens directly on snapshot arrival
+local function enrichBinding(binding)
+  local mods = binding.modifiers or {}
+  binding._lowerMod = lower(table.concat(mods, " "))
+  binding._keyRaw = lower(binding.key or "")
+  binding._formattedKey = formatKey(binding.key)
+  binding._lowerFormattedKey = lower(binding._formattedKey)
+  binding._lowerAction = lower(binding.action or "")
+end
+
 local function applySnapshot(value)
   snapshot = type(value) == "table" and value or nil
   if snapshot == nil then
@@ -224,6 +245,10 @@ local function applySnapshot(value)
   end
 
   bindings = type(snapshot.bindings) == "table" and snapshot.bindings or {}
+  for _, b in ipairs(bindings) do
+    enrichBinding(b)
+  end
+
   parseWarnings = type(snapshot.warnings) == "table" and snapshot.warnings or {}
   currentCompositor = type(snapshot.compositor) == "string" and snapshot.compositor or ""
   refreshing = snapshot.refreshing == true
@@ -443,18 +468,52 @@ local function effectiveCategory(binding)
   return binding.compositor == "niri" and niriCategoryFor(binding.action) or tr("other")
 end
 
-local function bindingMatches(binding)
-  local needle = lower(trim(query))
-  if needle == "" then return true end
-  local haystack = lower(table.concat({
-    table.concat(binding.modifiers, " "),
-    binding.key,
-    formatKey(binding.key),
-    effectiveDescription(binding),
-    binding.action,
-    effectiveCategory(binding),
-  }, " "))
-  return haystack:find(needle, 1, true) ~= nil
+local SEARCH_MODIFIER_ALIASES = {
+  win = "super",
+  logo = "super",
+  mod4 = "super",
+  cmd = "super",
+  control = "ctrl",
+  mod1 = "alt",
+}
+
+local function splitQueryTokens(rawQuery)
+  local clean = lower(rawQuery):gsub("[%+%-%,%|_]+", " ")
+  local tokens = {}
+  for token in clean:gmatch("%S+") do
+    table.insert(tokens, SEARCH_MODIFIER_ALIASES[token] or token)
+  end
+  return tokens
+end
+
+-- Evaluates pre-indexed tokens in O(1) without repeated memory allocations
+local function bindingMatches(binding, tokens)
+  if #tokens == 0 then return true end
+
+  local modStr = binding._lowerMod or ""
+  local keyRaw = binding._keyRaw or ""
+  local keyFormatted = binding._lowerFormattedKey or ""
+  local descStr = lower(effectiveDescription(binding))
+  local catStr = lower(effectiveCategory(binding))
+  local actionStr = binding._lowerAction or ""
+
+  for _, token in ipairs(tokens) do
+    local matched = false
+    if modStr:find(token, 1, true) then
+      matched = true
+    elseif keyRaw == token or keyFormatted == token or startsWith(keyRaw, token) or startsWith(keyFormatted, token) then
+      matched = true
+    elseif descStr:find(token, 1, true) then
+      matched = true
+    elseif catStr:find(token, 1, true) then
+      matched = true
+    elseif #token >= 3 and actionStr:find(token, 1, true) then
+      matched = true
+    end
+
+    if not matched then return false end
+  end
+  return true
 end
 
 local CATEGORY_PRIORITIES = {
@@ -478,12 +537,21 @@ local CATEGORY_PRIORITIES = {
   { lower(tr("other")), 950 },
 }
 
+local categoryPriorityCache = {}
 local function categoryPriority(name)
+  local cached = categoryPriorityCache[name]
+  if cached then return cached end
+
   local value = lower(name)
+  local score = 500
   for _, entry in ipairs(CATEGORY_PRIORITIES) do
-    if value:find(entry[1], 1, true) ~= nil then return entry[2] end
+    if value:find(entry[1], 1, true) ~= nil then
+      score = entry[2]
+      break
+    end
   end
-  return 500
+  categoryPriorityCache[name] = score
+  return score
 end
 
 local function bindingAvailableInView(hidden, undescribed, managing, showUndescribed)
@@ -514,10 +582,14 @@ local function visibleGroups()
   local managing = view == "edit"
   local groups = {}
   local byName = {}
+  
+  -- Tokenize search query once per frame rather than inside the 300+ item loop
+  local tokens = splitQueryTokens(query)
+
   for index, binding in ipairs(bindings) do
     local hidden = preferences.hidden[binding.id] == true
     local undescribed = authoredDescription(binding) == "" and binding.compositor ~= "niri"
-    if bindingAvailableInView(hidden, undescribed, managing, showUndescribed) and bindingMatches(binding) then
+    if bindingAvailableInView(hidden, undescribed, managing, showUndescribed) and bindingMatches(binding, tokens) then
       local category = effectiveCategory(binding)
       local group = byName[category]
       if group == nil then
@@ -530,12 +602,14 @@ local function visibleGroups()
       group.weight += 1
     end
   end
+
   table.sort(groups, function(a, b)
     local left = categoryPriority(a.name)
     local right = categoryPriority(b.name)
     if left ~= right then return left < right end
     return a.sourceOrder < b.sourceOrder
   end)
+
   for index, group in ipairs(groups) do group.order = index end
   return groups
 end
@@ -588,20 +662,18 @@ local function bindingRow(binding, occurrence)
   local hidden = preferences.hidden[binding.id] == true
   local contentOpacity = bindingContentOpacity(hidden)
   local pills = {}
+
   for index, modifier in ipairs(binding.modifiers) do
-    table.insert(pills, keyPill(modifier == "SUPER" and "Super" or modifier:sub(1, 1) .. lower(modifier:sub(2)), bucketForModifier(modifier), "mod-" .. index))
+    local modDisplay = MODIFIER_DISPLAY[modifier] or (modifier:sub(1, 1) .. lower(modifier:sub(2)))
+    table.insert(pills, keyPill(modDisplay, bucketForModifier(modifier), "mod-" .. index))
   end
-  table.insert(pills, keyPill(formatKey(binding.key), bucketForKey(binding.key), "key"))
+  table.insert(pills, keyPill(binding._formattedKey or formatKey(binding.key), bucketForKey(binding.key), "key"))
 
   local description = effectiveDescription(binding)
   local identity = binding.id .. "#" .. occurrence
   if view == "edit" and editingId == identity then
     local visibilityChanged = callback("visibility", function()
-      if hidden then
-        preferences.hidden[binding.id] = nil
-      else
-        preferences.hidden[binding.id] = true
-      end
+      preferences.hidden[binding.id] = not hidden and true or nil
       savePreferences()
       render()
     end)
@@ -645,11 +717,7 @@ local function bindingRow(binding, occurrence)
       render()
     end)
     local visibilityChanged = callback("visibility", function()
-      if hidden then
-        preferences.hidden[binding.id] = nil
-      else
-        preferences.hidden[binding.id] = true
-      end
+      preferences.hidden[binding.id] = not hidden and true or nil
       savePreferences()
       render()
     end)
