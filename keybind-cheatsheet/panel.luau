@@ -30,6 +30,7 @@ local refreshError = nil
 local snapshot = nil
 local query = ""
 local searchRevision = 0
+local searchFocused = true
 local view = "bindings"
 local editingId = nil
 local editDraft = ""
@@ -149,7 +150,6 @@ local function niriCategoryFor(action)
   return "Other"
 end
 
-
 local function preferencesPath()
   local directory, err = noctalia.pluginDataDir()
   if directory == nil then
@@ -239,7 +239,6 @@ refresh = function()
   noctalia.state.set(REFRESH_REQUEST_KEY, current + 1)
   render()
 end
-
 
 local COLOR_BUCKETS = {
   { id = "super", label = "Super", background = "primary", text = "on_primary", picker = "#6750A4" },
@@ -774,9 +773,34 @@ local function renderHeader()
     local clearSearch = callback("clearSearch", function()
       query = ""
       searchRevision += 1
+      searchFocused = true
       render()
     end)
-    table.insert(children, ui.input({ key = "search-" .. searchRevision, value = query, placeholder = tr("search_placeholder"), controlSize = "sm", width = 300, onChange = searchChanged }))
+    local onSearchFocus = callback("searchFocused", function()
+      searchFocused = true
+    end)
+    local onSearchBlur = callback("searchBlurred", function()
+      searchFocused = false
+    end)
+
+    local placeholderText = tr("search_placeholder")
+    if placeholderText == nil or placeholderText == "" or placeholderText == "search_placeholder" then
+      placeholderText = "Search keybinds... (/)"
+    else
+      placeholderText = placeholderText .. " (/)"
+    end
+
+    table.insert(children, ui.input({
+      key = "search-" .. searchRevision,
+      value = query,
+      placeholder = placeholderText,
+      focus = (view == "bindings" and editingId == nil and searchFocused),
+      controlSize = "sm",
+      width = 300,
+      onChange = searchChanged,
+      onFocus = onSearchFocus,
+      onBlur = onSearchBlur,
+    }))
     table.insert(children, ui.button({ glyph = "x", width = 26, variant = "ghost", controlSize = "sm", enabled = query ~= "", tooltip = tr("clear"), onClick = clearSearch }))
   end
   if not loading or #bindings > 0 then
@@ -792,7 +816,7 @@ local function renderHeader()
     table.insert(children, ui.label({ text = tr("hidden_count", { count = count }), color = "on_surface_variant", fontSize = 12 }))
     table.insert(children, ui.button({ glyph = "eye", variant = "ghost", controlSize = "sm", enabled = count > 0, tooltip = tr("restore_hidden"), onClick = restoreHidden }))
   end
-  table.insert(children, ui.button({ glyph = "refresh", variant = "ghost", tooltip = tr("refresh"), enabled = not refreshing, onClick = refreshClick }))
+  table.insert(children, ui.button({ glyph = "refresh", variant = "ghost", tooltip = tr("refresh"), enabled = true, onClick = refreshClick }))
   table.insert(children, ui.button({ glyph = view == "edit" and "check" or "pencil", variant = "ghost", tooltip = view == "edit" and tr("finish_editing") or tr("edit_bindings"), selected = view == "edit", onClick = editMode }))
   table.insert(children, ui.button({ glyph = view == "appearance" and "check" or "palette", variant = "ghost", tooltip = view == "appearance" and tr("back") or tr("appearance"), selected = view == "appearance", onClick = appearance }))
   return ui.row({ align = "center", justify = "space_between", gap = 7 }, children)
@@ -811,6 +835,27 @@ render = function()
   elseif view == "edit" then
     contentState = "edit"
   end
+
+  local handleKeyPress = callback("rootKeyPress", function(keyEvent)
+    local keyName = type(keyEvent) == "table" and keyEvent.key or tostring(keyEvent or "")
+    if keyName == "/" or keyName == "slash" then
+      if editingId == nil and not searchFocused then
+        searchFocused = true
+        searchRevision += 1
+        render()
+      end
+    elseif keyName == "Escape" or keyName == "esc" then
+      if query ~= "" then
+        query = ""
+        searchRevision += 1
+        searchFocused = true
+        render()
+      elseif panelOpen then
+        panel.close()
+      end
+    end
+  end)
+
   local children = { renderHeader() }
   if view == "appearance" then
     table.insert(children, appearanceBody())
@@ -833,7 +878,15 @@ render = function()
     end
     table.insert(children, bindingsBody())
   end
-  panel.render(ui.column({ key = "keybind-cheatsheet-" .. contentState, flexGrow = 1, gap = 8, align = "stretch" }, children))
+
+  panel.render(ui.column({
+    key = "keybind-cheatsheet-" .. contentState,
+    flexGrow = 1,
+    gap = 8,
+    align = "stretch",
+    onKeyPress = handleKeyPress,
+    onKeyDown = handleKeyPress,
+  }, children))
 end
 
 noctalia.state.watch(SNAPSHOT_KEY, function(value)
@@ -845,8 +898,10 @@ local function releasePanelState(clearModel)
   panelOpen = false
   view = "bindings"
   query = ""
+  searchFocused = false
   editingId = nil
   editDraft = ""
+  refreshing = false
   resetCallbacks()
   if clearModel then
     bindings = {}
@@ -865,8 +920,10 @@ function onOpen(_context)
   view = "bindings"
   query = ""
   searchRevision += 1
+  searchFocused = true
   editingId = nil
   editDraft = ""
+  refreshing = false
   loadPreferences()
   applySnapshot(noctalia.state.get(SNAPSHOT_KEY))
   render()
@@ -889,6 +946,10 @@ function onIpc(event, _payload)
     if panelOpen then panel.close() else noctalia.togglePanel(PANEL_ID) end
   elseif event == "refresh" then
     refresh()
+  elseif event == "focus-search" then
+    searchFocused = true
+    searchRevision += 1
+    render()
   elseif event == "self-test" then
     local current = tonumber(noctalia.state.get(SELF_TEST_REQUEST_KEY)) or 0
     noctalia.state.set(SELF_TEST_REQUEST_KEY, current + 1)
@@ -904,6 +965,7 @@ local function lifecycleState()
     snapshotLoaded = snapshot ~= nil,
     callbackCount = #dynamicCallbacks,
     editDraft = editDraft,
+    searchFocused = searchFocused,
   }
 end
 
