@@ -6,20 +6,16 @@
 -- Hierarchical category presentation.
 
 local stl = require("../stl/stl.luau")
+local constants = require("./constants.luau")
 local log = stl.log.scope("KeybindsPanel")
 
 local noctalia = noctalia
 local ui = ui
 local panel = panel
 
-local PANEL_ID = "kenn/keybind-cheatsheet:cheatsheet"
-local SNAPSHOT_KEY = "keybind-cheatsheet.snapshot"
-local REFRESH_REQUEST_KEY = "keybind-cheatsheet.refresh-request"
-local PREFERENCES_FILE = "preferences.json"
-
 -- State channels
-local snapshotChannel = stl.state.channel(SNAPSHOT_KEY, nil :: any)
-local refreshChannel = stl.state.channel(REFRESH_REQUEST_KEY, 0)
+local snapshotChannel = stl.state.channel(constants.SNAPSHOT_KEY, nil :: any)
+local refreshChannel = stl.state.channel(constants.REFRESH_REQUEST_KEY, 0)
 
 local bindings = {}
 local parseWarnings = {}
@@ -188,7 +184,7 @@ local function normalizePreferences(decoded)
 end
 
 local function loadPreferences()
-	local decoded, err = stl.filesystem.readPluginData(PREFERENCES_FILE)
+	local decoded, err = stl.filesystem.readPluginData(constants.PREFERENCES_FILE)
 	if err then
 		log.debug("No custom preferences file found or failed reading", { err = err })
 	end
@@ -196,7 +192,7 @@ local function loadPreferences()
 end
 
 local function savePreferences()
-	local ok, err = stl.filesystem.writePluginData(PREFERENCES_FILE, preferences, true)
+	local ok, err = stl.filesystem.writePluginData(constants.PREFERENCES_FILE, preferences, true)
 	if not ok then
 		log.error("Failed to save preferences", { err = err })
 		if noctalia.notifyError then
@@ -1273,7 +1269,7 @@ stl.lifecycle.panel(getfenv(), {
 			if panelOpen then
 				panel.close()
 			else
-				noctalia.togglePanel(PANEL_ID)
+				noctalia.togglePanel(constants.PANEL_ID)
 			end
 		elseif event == "refresh" then
 			refresh()
