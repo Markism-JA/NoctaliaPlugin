@@ -1,11 +1,10 @@
 --!strict
 -- Cache-first keybind data service for Mango, Hyprland, and Niri.
 
-local lifecycle = require("../stl/lifecycle")
+local lifecycle = require("../stl/lifecycle.luau")
 local stl = require("../stl/stl.luau")
 local config = stl.config
 local filesystem = stl.filesystem
-local lifecycle = stl.lifecycle
 local logger = stl.log
 local log = stl.log.scope("KeybindService")
 local proc = stl.proc
