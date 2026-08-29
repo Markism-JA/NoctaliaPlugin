@@ -85,7 +85,13 @@ currentLayout = extractMyLayout(initialTopology)
 
 local function render()
   local container = barWidget.isVertical() and ui.column or ui.row
-  barWidget.render(container({ gap = 5, align = "center" }, {
+
+  barWidget.render(container({
+      gap = 5,
+      align = "center",
+      paddingH = 6,
+      paddingV = 2,
+  }, {
     ui.glyph({
       name = GLYPHS[currentLayout] or "layout-grid",
       size = 14,
@@ -94,15 +100,18 @@ local function render()
     ui.row({
       fill = "primary/0.18",
       radius = 6,
-      paddingH = 6,
-      paddingV = 2,
+      minWidth = 36,
+      minHeight = 18,
       align = "center",
+      justify = "center",
+      paddingH = 4,
     }, {
       ui.label({
         text = LABELS[currentLayout] or currentLayout:sub(1, 3):upper(),
         color = "primary",
         fontWeight = "bold",
         fontSize = 11,
+        textAlign = "center",
       }),
     }),
   }))
