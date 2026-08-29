@@ -1,0 +1,9 @@
+{
+    "languageMode": "nonstrict",
+    "aliases": {
+        "types": "./types"
+    },
+    "lint": {
+        "FunctionUnused": true
+    }
+}
