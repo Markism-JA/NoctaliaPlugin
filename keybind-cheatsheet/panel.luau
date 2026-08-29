@@ -5,21 +5,21 @@
 -- panel only reads the shared snapshot and renders it.
 -- Hierarchical category presentation.
 
+local stl = require("../stl/stl.luau")
+local log = stl.log.scope("KeybindsPanel")
+
 local noctalia = noctalia
 local ui = ui
 local panel = panel
-if noctalia == nil then
-	local host = require("./tests/host_mock")
-	noctalia = host.noctalia
-	ui = host.ui
-	panel = host.panel
-end
 
 local PANEL_ID = "kenn/keybind-cheatsheet:cheatsheet"
 local SNAPSHOT_KEY = "keybind-cheatsheet.snapshot"
 local REFRESH_REQUEST_KEY = "keybind-cheatsheet.refresh-request"
-local SELF_TEST_REQUEST_KEY = "keybind-cheatsheet.self-test-request"
 local PREFERENCES_FILE = "preferences.json"
+
+-- State channels
+local snapshotChannel = stl.state.channel(SNAPSHOT_KEY, nil :: any)
+local refreshChannel = stl.state.channel(REFRESH_REQUEST_KEY, 0)
 
 local bindings = {}
 local parseWarnings = {}
@@ -36,7 +36,6 @@ local view = "bindings"
 local editingId = nil
 local editDraft = ""
 local preferences = { version = 1, hidden = {}, descriptions = {}, colors = {} }
-local refreshing = false
 
 local render
 local refresh
@@ -46,7 +45,10 @@ local dynamicCallbacks = {}
 local callbackIndex = 0
 
 local function tr(key, values)
-	return noctalia.tr(key, values)
+	if noctalia and noctalia.tr then
+		return noctalia.tr(key, values)
+	end
+	return key
 end
 
 local function trim(s)
@@ -155,15 +157,6 @@ local function formatKey(key)
 	return key:gsub("^mouse:", "Mouse ")
 end
 
-local function preferencesPath()
-	local directory, err = noctalia.pluginDataDir()
-	if directory == nil then
-		noctalia.log("Could not resolve plugin data directory: " .. (err or "unknown error"))
-		return nil
-	end
-	return directory .. "/" .. PREFERENCES_FILE
-end
-
 local function normalizePreferences(decoded)
 	local result = { version = 1, hidden = {}, descriptions = {}, colors = {} }
 	if type(decoded) ~= "table" then
@@ -195,32 +188,20 @@ local function normalizePreferences(decoded)
 end
 
 local function loadPreferences()
-	local path = preferencesPath()
-	if path == nil then
-		preferences = normalizePreferences(nil)
-		return
+	local decoded, err = stl.filesystem.readPluginData(PREFERENCES_FILE)
+	if err then
+		log.debug("No custom preferences file found or failed reading", { err = err })
 	end
-	local raw = noctalia.readFile(path)
-	if raw == nil or raw == "" then
-		preferences = normalizePreferences(nil)
-		return
-	end
-	local decoded = noctalia.json.decode(raw)
 	preferences = normalizePreferences(decoded)
 end
 
 local function savePreferences()
-	local path = preferencesPath()
-	if path == nil then
-		return
-	end
-	local encoded = noctalia.json.encode(preferences, true)
-	if encoded == nil then
-		return
-	end
-	local ok, err = noctalia.writeFile(path, encoded)
+	local ok, err = stl.filesystem.writePluginData(PREFERENCES_FILE, preferences, true)
 	if not ok then
-		noctalia.notifyError(tr("title"), err or "Could not save preferences")
+		log.error("Failed to save preferences", { err = err })
+		if noctalia.notifyError then
+			noctalia.notifyError(tr("title"), err or "Could not save preferences")
+		end
 	end
 end
 
@@ -240,7 +221,6 @@ local function applySnapshot(value)
 		parseWarnings = {}
 		currentCompositor = ""
 		loading = true
-		refreshing = false
 		panelError = nil
 		refreshError = nil
 		return
@@ -253,7 +233,6 @@ local function applySnapshot(value)
 
 	parseWarnings = type(snapshot.warnings) == "table" and snapshot.warnings or {}
 	currentCompositor = type(snapshot.compositor) == "string" and snapshot.compositor or ""
-	refreshing = snapshot.refreshing == true
 	loading = (snapshot.status == "loading" or snapshot.status == "idle") and #bindings == 0
 	panelError = snapshot.status == "error" and (snapshot.error or tr("missing_config")) or nil
 	refreshError = snapshot.status == "ready"
@@ -264,9 +243,8 @@ local function applySnapshot(value)
 end
 
 refresh = function()
-	local current = tonumber(noctalia.state.get(REFRESH_REQUEST_KEY)) or 0
-	refreshing = true
-	noctalia.state.set(REFRESH_REQUEST_KEY, current + 1)
+	local current = tonumber(refreshChannel.get()) or 0
+	refreshChannel.set(current + 1)
 	render()
 end
 
@@ -359,19 +337,23 @@ local function chooseColor(bucketId, property)
 	local bucket = COLOR_BY_ID[bucketId] or COLOR_BY_ID.default
 	local current = colorValue(bucketId, property)
 	local initial = isHexColor(current) and current:sub(1, 7) or bucket.picker
-	noctalia.openColorPicker(initial, function(color)
-		if color ~= nil then
-			setColor(bucketId, property, color)
-		end
-	end)
+	if noctalia.openColorPicker then
+		noctalia.openColorPicker(initial, function(color)
+			if color ~= nil then
+				setColor(bucketId, property, color)
+			end
+		end)
+	end
 end
 
 local function pasteColor(bucketId, property)
-	local value = trim(noctalia.clipboardText() or "")
+	local value = trim(noctalia.clipboardText and noctalia.clipboardText() or "")
 	if isHexColor(value) then
 		setColor(bucketId, property, string.upper(value))
 	else
-		noctalia.notifyError(tr("title"), "Clipboard does not contain a #RRGGBB color")
+		if noctalia.notifyError then
+			noctalia.notifyError(tr("title"), "Clipboard does not contain a #RRGGBB color")
+		end
 	end
 end
 
@@ -546,7 +528,7 @@ local SEARCH_MODIFIER_ALIASES = {
 }
 
 local function splitQueryTokens(rawQuery)
-	local clean = lower(rawQuery):gsub("[%+%-%,%|_]+", " ")
+	local clean = lower(rawQuery):gsub("[%+%-%%,_|]+", " ")
 	local tokens = {}
 	for token in clean:gmatch("%S+") do
 		table.insert(tokens, SEARCH_MODIFIER_ALIASES[token] or token)
@@ -554,7 +536,6 @@ local function splitQueryTokens(rawQuery)
 	return tokens
 end
 
--- Evaluates pre-indexed tokens in O(1) without repeated memory allocations
 local function bindingMatches(binding, tokens)
 	if #tokens == 0 then
 		return true
@@ -661,12 +642,11 @@ local function restoreHiddenBindings(bindingList, hiddenPreferences)
 end
 
 local function visibleGroups()
-	local showUndescribed = noctalia.getConfig("show_undescribed") ~= false
+	local showUndescribed = stl.config.getBool("show_undescribed", true)
 	local managing = view == "edit"
 	local groups = {}
 	local byName = {}
 
-	-- Tokenize search query once per frame rather than inside the 300+ item loop
 	local tokens = splitQueryTokens(query)
 
 	for index, binding in ipairs(bindings) do
@@ -704,13 +684,15 @@ local function visibleGroups()
 end
 
 local function columnCount()
-	local configured = math.clamp(tonumber(noctalia.getConfig("columns")) or 3, 1, 4)
+	local configured = math.clamp(stl.config.getNumber("columns", 3), 1, 4)
 	local outputWidth = 1920
-	local focused = noctalia.focusedOutputName()
-	for _, output in ipairs(noctalia.outputs()) do
-		if output.name == focused or output.focused then
-			outputWidth = output.width / math.max(output.scale or 1, 1)
-			break
+	if noctalia.focusedOutputName and noctalia.outputs then
+		local focused = noctalia.focusedOutputName()
+		for _, output in ipairs(noctalia.outputs()) do
+			if output.name == focused or output.focused then
+				outputWidth = output.width / math.max(output.scale or 1, 1)
+				break
+			end
 		end
 	end
 	local responsive = outputWidth < 760 and 1 or (outputWidth < 1100 and 2 or (outputWidth < 1500 and 3 or 4))
@@ -842,7 +824,7 @@ local function bindingRow(binding, occurrence)
 			maxLines = 1,
 		}),
 	}
-	if noctalia.getConfig("show_actions") ~= false and description ~= "" and binding.action ~= "" then
+	if stl.config.getBool("show_actions", true) and description ~= "" and binding.action ~= "" then
 		table.insert(
 			labels,
 			ui.label({ text = binding.action, color = "on_surface_variant", fontSize = 11, maxLines = 1 })
@@ -1235,68 +1217,70 @@ render = function()
 	}, children))
 end
 
-noctalia.state.watch(SNAPSHOT_KEY, function(value)
+-- Watch state snapshot updates
+snapshotChannel.watch(function(value)
 	applySnapshot(value)
 	if panelOpen then
 		render()
 	end
 end)
 
-function onOpen(_context)
-	panelOpen = true
-	view = "bindings"
-	query = ""
-	searchRevision += 1
-	searchFocused = true
-	editingId = nil
-	editDraft = ""
-	refreshing = false
-	loadPreferences()
-	applySnapshot(noctalia.state.get(SNAPSHOT_KEY))
-	render()
-end
-
-function onClose()
-	panelOpen = false
-	view = "bindings"
-	query = ""
-	searchFocused = false
-	editingId = nil
-	editDraft = ""
-	refreshing = false
-	resetCallbacks()
-end
-
-function onKey(chord, pressed)
-	if not pressed then
-		return
-	end
-	if chord == "q" or chord == "Escape" then
-		if query ~= "" then
-			query = ""
-			searchRevision += 1
-			searchFocused = true
-			render()
-		else
-			panel.close()
-		end
-	elseif chord == "r" and view ~= "appearance" and editingId == nil then
-		refresh()
-	end
-end
-
-function onIpc(event, _payload)
-	if event == "toggle" then
-		if panelOpen then
-			panel.close()
-		else
-			noctalia.togglePanel(PANEL_ID)
-		end
-	elseif event == "refresh" then
-		refresh()
-	elseif event == "focus-search" then
-		searchFocused = true
+-- Register panel lifecycle hooks via STL
+stl.lifecycle.panel(getfenv(), {
+	onOpen = function(_context: string?)
+		panelOpen = true
+		view = "bindings"
+		query = ""
 		searchRevision += 1
+		searchFocused = true
+		editingId = nil
+		editDraft = ""
+		loadPreferences()
+		applySnapshot(snapshotChannel.get())
 		render()
-	end
-end
+	end,
+
+	onClose = function()
+		panelOpen = false
+		view = "bindings"
+		query = ""
+		searchFocused = false
+		editingId = nil
+		editDraft = ""
+		resetCallbacks()
+	end,
+
+	onKey = function(chord: string, pressed: boolean)
+		if not pressed then
+			return
+		end
+		if chord == "q" or chord == "Escape" then
+			if query ~= "" then
+				query = ""
+				searchRevision += 1
+				searchFocused = true
+				render()
+			else
+				panel.close()
+			end
+		elseif chord == "r" and view ~= "appearance" and editingId == nil then
+			refresh()
+		end
+	end,
+
+	onIpc = function(event: string, _payload: string)
+		if event == "toggle" then
+			if panelOpen then
+				panel.close()
+			else
+				noctalia.togglePanel(PANEL_ID)
+			end
+		elseif event == "refresh" then
+			refresh()
+		elseif event == "focus-search" then
+			searchFocused = true
+			searchRevision += 1
+			render()
+		end
+	end,
+})
