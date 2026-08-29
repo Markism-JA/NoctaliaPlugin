@@ -1,13 +1,12 @@
-[[plugin]]
 id           = "maddingo/hypr-layout-switcher"
 name         = "Hyprland Layout Switcher"
+description  = "Per-monitor Hyprland workspace layout indicator and interactive switcher."
 version      = "0.1.1"
-plugin_api   = 3
+plugin_api   = 13
 author       = "maddingo"
 license      = "MIT"
 icon         = "layout-grid"
-description  = "Per-monitor Hyprland workspace layout indicator and interactive switcher."
-tags         = ["hyprland", "wm", "layout", "workspace"]
+tags         = ["hyprland"]
 dependencies = ["hyprctl"]
 
 # Shared plugin settings (Settings → Plugins → Gear icon)
@@ -29,11 +28,11 @@ id    = "poller"
 entry = "service.luau"
 
 [[panel]]
-id              = "layouts"
-entry           = "layout_panel.luau"
-width           = 440
-height          = 360
-placement       = "floating"
-position        = "center"
-keyboard_focus  = "exclusive"
-capture_keys    = ["up", "down", "j", "k", "Return", "space", "1", "2", "3", "4", "q"]
+id             = "layouts"
+entry          = "layout_panel.luau"
+width          = 440
+height         = 360
+placement      = "floating"
+position       = "center"
+keyboard_focus = "exclusive"
+capture_keys   = ["up", "down", "j", "k", "Return", "space", "1", "2", "3", "4", "q"]
