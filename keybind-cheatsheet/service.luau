@@ -5,6 +5,7 @@
 -- again after a relevant settings change or explicit refresh request. There
 -- is no update interval, filesystem watcher, polling loop, or persistent
 -- subprocess.
+-- Hierarchical section parser (= Section, == Subsection).
 
 local noctalia = noctalia
 if noctalia == nil then
@@ -16,7 +17,7 @@ local SNAPSHOT_KEY = "keybind-cheatsheet.snapshot"
 local REFRESH_REQUEST_KEY = "keybind-cheatsheet.refresh-request"
 local SELF_TEST_REQUEST_KEY = "keybind-cheatsheet.self-test-request"
 local BINDINGS_CACHE_FILE = "bindings-cache.json"
-local CACHE_SCHEMA = 1
+local CACHE_SCHEMA = 2
 
 local refreshing = false
 local refreshQueued = false
@@ -103,18 +104,6 @@ local function expandEnvironment(path)
   return noctalia.expandPath(expanded)
 end
 
-local function unquote(value)
-  local result = trim(value)
-  if #result >= 2 then
-    local first = result:sub(1, 1)
-    local last = result:sub(-1)
-    if (first == "\"" and last == "\"") or (first == "'" and last == "'") then
-      result = result:sub(2, -2)
-    end
-  end
-  return result
-end
-
 local function splitCsv(value, maximumParts)
   local parts = {}
   local count = 0
@@ -125,6 +114,52 @@ local function splitCsv(value, maximumParts)
   end
   if #parts == 0 then table.insert(parts, trim(value)) end
   return parts
+end
+
+-- ============================================================================
+-- Section & Heading Parser (= L1, == L2)
+-- ============================================================================
+local function parseHeading(rawLine: string): { level: number, title: string }?
+  local body = rawLine:match("^%s*#+%s*(.*)$")
+            or rawLine:match("^%s*%-%-+%s*(.*)$")
+            or rawLine:match("^%s*//+%s*(.*)$")
+  if not body then return nil end
+
+  local level = nil
+  local content = nil
+
+  local sub = body:match("^==+%s*(.*)$")
+  if sub then
+    level = 2
+    content = sub
+  else
+    local main = body:match("^=+%s*(.*)$")
+    if main then
+      level = 1
+      content = main
+    end
+  end
+
+  if not level or not content then return nil end
+
+  local title = content:gsub("=+$", ""):match("^%s*(.-)%s*$")
+  if not title or #title < 2 or #title > 45 then return nil end
+
+  local l = lower(title)
+  if l:match("^bind") or l:match("^exec") or l:match("^local%s") or l:match("^return%s")
+     or l:match("^note:") or l:match("^todo:") or l:match("^fixme:")
+     or title:find("=") or title:match("[%.;]$") or title:match("^https?://") then
+    return nil
+  end
+
+  return { level = level, title = title }
+end
+
+local function buildCategory(section: string, subsection: string): string
+  if subsection ~= "" then
+    return section .. " • " .. subsection
+  end
+  return section
 end
 
 -- ============================================================================
@@ -181,6 +216,8 @@ local function addBinding(target, binding, skipTrim)
   if not skipTrim then
     binding.description = trim(binding.description)
     binding.category = trim(binding.category)
+    binding.section = trim(binding.section)
+    binding.subsection = trim(binding.subsection)
     binding.action = trim(binding.action)
     binding.key = trim(binding.key)
   end
@@ -193,47 +230,6 @@ end
 -- ============================================================================
 -- Fast Heuristic Category Fallbacks
 -- ============================================================================
-
-local DISPATCHER_MAP = {
-  killactive = "Window Management & Placement",
-  closewindow = "Window Management & Placement",
-  togglefloating = "Window Management & Placement",
-  fullscreen = "Window Management & Placement",
-  movefocus = "Focus & Navigation",
-  focuswindow = "Focus & Navigation",
-  cyclenext = "Focus & Navigation",
-  focusmonitor = "Focus & Navigation",
-  workspace = "Workspaces & Scratchpads",
-  movetoworkspace = "Workspaces & Scratchpads",
-  movetoworkspacesilent = "Workspaces & Scratchpads",
-  togglespecialworkspace = "Workspaces & Scratchpads",
-  submap = "Submaps & Modes: VM Passthrough",
-}
-
-local function fallbackCategory(dispatcher, arg, desc)
-  local direct = DISPATCHER_MAP[dispatcher]
-  if direct then return direct end
-
-  local s = lower(desc)
-  if s == "" then return "Other" end
-  if s:find("launch", 1, true) or s:find("terminal", 1, true) or s:find("browser", 1, true) then
-    return "Applications & Launchers"
-  end
-  if s:find("toggle", 1, true) or s:find("control center", 1, true) or s:find("bar", 1, true) then
-    return "Shell & Desktop Controls"
-  end
-  if s:find("layout", 1, true) or s:find("master", 1, true) or s:find("dwindle", 1, true) then
-    return "Workspace Layouts"
-  end
-  if s:find("brightness", 1, true) or s:find("volume", 1, true) or s:find("media", 1, true) then
-    return "Media & Hardware"
-  end
-  if s:find("screen", 1, true) or s:find("ocr", 1, true) or s:find("annotate", 1, true) then
-    return "Screen Toolkit & Capture Utilities"
-  end
-  return "Other"
-end
-
 local function fallbackCategory(dispatcher, arg, desc)
   local d = lower(dispatcher or "")
   local a = lower(arg or "")
@@ -280,36 +276,30 @@ local function fallbackCategory(dispatcher, arg, desc)
 end
 
 -- ============================================================================
--- Budget-Safe Ultra Fast Lexer & AST Scanner
+-- AST / Lexer Scanner for Hyprland Lua
 -- ============================================================================
 local function scanHyprLuaContent(content, context)
-  local currentCategory = "General"
+  local currentSection = "General"
+  local currentSubsection = ""
 
   for line in content:gmatch("[^\r\n]+") do
-    local b1, b2 = line:byte(1, 2)
-
-    -- Fast branch 1: Line comment (-- ...)
-    if b1 == 45 and b2 == 45 then
-      local text = line:match("^%-%-+%s*(%w.*)")
-      if text then
-        local clean = text:match("^%d+[%d%.%-_:)%s]+(.*)") or text
-        clean = clean:match("^([%w%s%&%/%,%-%(%)%:%+]+)")
-        if clean then
-          clean = trim(clean)
-          if #clean >= 3 and #clean <= 60 and not clean:find("=", 1, true) then
-            local l = lower(clean)
-            if not l:match("^local%s") and not l:match("^function%s") and not l:match("^return%s") and not l:match("^hl%.") then
-              currentCategory = clean
-            end
-          end
-        end
+    local heading = parseHeading(line)
+    if heading then
+      if heading.level == 1 then
+        currentSection = heading.title
+        currentSubsection = ""
+      elseif heading.level == 2 then
+        currentSubsection = heading.title
       end
-    -- Fast branch 2: Code line potentially containing description
     elseif line:find("desc", 1, true) then
       local desc = line:match('description%s*=%s*["\']([^"\']+)["\']')
         or line:match('desc%s*=%s*["\']([^"\']+)["\']')
       if desc and desc ~= "" then
-        context.exactRules[desc] = currentCategory
+        context.exactRules[desc] = {
+          section = currentSection,
+          subsection = currentSubsection,
+          category = buildCategory(currentSection, currentSubsection),
+        }
       end
     end
   end
@@ -346,7 +336,7 @@ local function scanHyprLua(rootPath)
     if not visited[normPath] then
       visited[normPath] = true
       local content = noctalia.readFile(normPath)
-      if content and (content:find("bind", 1, true) or content:find("desc", 1, true)) then
+      if content and (content:find("bind", 1, true) or content:find("desc", 1, true) or content:find("%-%-")) then
         local info = noctalia.fileInfo(normPath)
         if info then
           table.insert(context.sources, { path = normPath, size = info.size, mtime = info.mtime })
@@ -404,16 +394,17 @@ local function parseHyprJson(raw, scanContext)
         local bType = entry.mouse == true and "bindm" or "bind"
         local submap = entry.submap or ""
         local modifiers = modifiersFromMask(entry.modmask)
-        local category = nil
+        local rule = exactRules[description]
+        
+        local section = rule and rule.section or ""
+        local subsection = rule and rule.subsection or ""
+        local category = rule and rule.category or nil
 
-        if description ~= "" then
-          category = exactRules[description]
-        end
         if not category or category == "" then
           category = fallbackCategory(dispatcher, argument, description)
+          section = category
         end
 
-        -- Direct string construction without regex trim
         local action = argument ~= "" and (dispatcher .. " " .. argument) or dispatcher
 
         addBinding(result, {
@@ -423,11 +414,13 @@ local function parseHyprJson(raw, scanContext)
           key = key,
           action = action,
           description = description,
+          section = section,
+          subsection = subsection,
           category = category,
           sourceFile = "hyprctl binds -j",
           sourceLine = 0,
           submap = submap,
-        }, true) -- Pass 'true' to signal pre-sanitized input
+        }, true)
       end
     end
   end
@@ -435,7 +428,7 @@ local function parseHyprJson(raw, scanContext)
 end
 
 -- ============================================================================
--- Mango & Niri Parsers
+-- Mango, Hyprland Conf, and Niri Parsers
 -- ============================================================================
 local function extractTrailingDescription(line)
   local ending = line:sub(-1)
@@ -446,21 +439,28 @@ local function extractTrailingDescription(line)
     startIndex, _, description = line:find("#%s*'([^']*)'%s*$")
   end
   if startIndex == nil then
-      return line, ""
+    return line, ""
   end
   return trim(line:sub(1, startIndex - 1)), trim(description)
 end
 
 local function parseMangoContent(content, sourceFile, context)
-  local category = ""
+  local currentSection = "General"
+  local currentSubsection = ""
   local lineNumber = 0
+
   for rawLine in content:gmatch("[^\r\n]+") do
     lineNumber = lineNumber + 1
     local line = trim(rawLine)
     if line ~= "" then
-      if startsWith(line, "#") then
-        local text = line:match("^#+%s*(%w.*)")
-        if text then category = trim(text) end
+      local heading = parseHeading(line)
+      if heading then
+        if heading.level == 1 then
+          currentSection = heading.title
+          currentSubsection = ""
+        elseif heading.level == 2 then
+          currentSubsection = heading.title
+        end
       elseif line:find("bind", 1, true) ~= nil then
         local clean, description = extractTrailingDescription(line)
         local directive, body = clean:match("^([%a]*bind)%s*=%s*(.*)$")
@@ -471,6 +471,10 @@ local function parseMangoContent(content, sourceFile, context)
           local command = fields[3] or ""
           local parameters = fields[4] or ""
           if key ~= "" and command ~= "" then
+            local category = buildCategory(currentSection, currentSubsection)
+            if category == "General" and description == "" then
+              category = fallbackCategory(command, parameters, description)
+            end
             addBinding(context.bindings, {
               compositor = "mango",
               bindingType = lower(directive),
@@ -478,7 +482,9 @@ local function parseMangoContent(content, sourceFile, context)
               key = key,
               action = trim(command .. " " .. parameters),
               description = description,
-              category = category ~= "" and category or fallbackCategory(command, parameters, description),
+              section = currentSection,
+              subsection = currentSubsection,
+              category = category,
               sourceFile = sourceFile,
               sourceLine = lineNumber,
             })
@@ -491,18 +497,26 @@ local function parseMangoContent(content, sourceFile, context)
 end
 
 local function parseHyprContent(content, sourceFile, context)
-  local category = ""
+  local currentSection = "General"
+  local currentSubsection = ""
   local lineNumber = 0
+
   for rawLine in content:gmatch("[^\r\n]+") do
     lineNumber = lineNumber + 1
     local line = trim(rawLine)
     if line ~= "" then
       local variable, value = line:match("^%$([%w_]+)%s*=%s*(.-)%s*$")
-      local heading = startsWith(line, "#") and line:match("^#+%s*(%w.*)") or nil
+      local heading = parseHeading(line)
+
       if variable ~= nil then
         context.variables[variable] = value
       elseif heading ~= nil then
-        category = trim(heading)
+        if heading.level == 1 then
+          currentSection = heading.title
+          currentSubsection = ""
+        elseif heading.level == 2 then
+          currentSubsection = heading.title
+        end
       else
         local clean, description = extractTrailingDescription(line)
         local directive, body = clean:match("^(bind[%a]*)%s*=%s*(.*)$")
@@ -511,6 +525,10 @@ local function parseHyprContent(content, sourceFile, context)
           local key = fields[2] or ""
           local dispatcher = fields[3] or ""
           if key ~= "" and dispatcher ~= "" then
+            local category = buildCategory(currentSection, currentSubsection)
+            if category == "General" and description == "" then
+              category = fallbackCategory(dispatcher, fields[4] or "", description)
+            end
             addBinding(context.bindings, {
               compositor = "hyprland",
               bindingType = lower(directive),
@@ -518,7 +536,9 @@ local function parseHyprContent(content, sourceFile, context)
               key = key,
               action = trim(dispatcher .. " " .. (fields[4] or "")),
               description = description,
-              category = category ~= "" and category or fallbackCategory(dispatcher, fields[4] or "", description),
+              section = currentSection,
+              subsection = currentSubsection,
+              category = category,
               sourceFile = sourceFile,
               sourceLine = lineNumber,
             })
@@ -530,15 +550,67 @@ local function parseHyprContent(content, sourceFile, context)
   return {}
 end
 
+local function niriCategoryFor(action: string): string
+  local value = lower(action)
+  if startsWith(value, "spawn") then return "Applications & Launchers" end
+  if startsWith(value, "focus-column-") or startsWith(value, "focus-window-") then return "Focus & Navigation" end
+  if startsWith(value, "focus-workspace-") then return "Workspaces & Scratchpads" end
+  if startsWith(value, "move-column-") or startsWith(value, "move-window-") then return "Window Management & Placement" end
+  if startsWith(value, "screenshot") then return "Screen Toolkit & Capture Utilities" end
+  if startsWith(value, "close-window") or startsWith(value, "fullscreen-window") then return "Window Management & Placement" end
+  if startsWith(value, "power-off-monitors") or startsWith(value, "quit") then return "Shell & Desktop Controls" end
+  return "Other"
+end
+
 local function parseNiriContent(content, sourceFile, context)
-  local category = ""
+  local currentSection = "General"
+  local currentSubsection = ""
+  local lineNumber = 0
+
   for rawLine in content:gmatch("[^\r\n]+") do
+    lineNumber = lineNumber + 1
     local line = trim(rawLine)
-    if startsWith(line, "//") or startsWith(line, "#") then
-      local text = line:match("^[/#]+%s*(%w.*)")
-      if text then category = trim(text) end
+
+    if line ~= "" then
+      local heading = parseHeading(line)
+      if heading then
+        if heading.level == 1 then
+          currentSection = heading.title
+          currentSubsection = ""
+        elseif heading.level == 2 then
+          currentSubsection = heading.title
+        end
+      else
+        -- Match single-line KDL binds: "Mod+Shift+S { screenshot-screen; }"
+        local bindChord, actionBody = line:match("^([^%{]+)%s*%{%s*(.-)%s*;?%s*%}%s*$")
+        if bindChord and actionBody then
+          local cleanAction = trim(actionBody:gsub(";+$", ""))
+          local modifiers = normalizeModifiers(bindChord, {})
+          local key = bindChord:match("([^+%s]+)$") or ""
+
+          local category = buildCategory(currentSection, currentSubsection)
+          if category == "General" then
+            category = niriCategoryFor(cleanAction)
+          end
+
+          addBinding(context.bindings, {
+            compositor = "niri",
+            bindingType = "bind",
+            modifiers = modifiers,
+            key = key,
+            action = cleanAction,
+            description = "",
+            section = currentSection,
+            subsection = currentSubsection,
+            category = category,
+            sourceFile = sourceFile,
+            sourceLine = lineNumber,
+          })
+        end
+      end
     end
   end
+
   return {}
 end
 
@@ -555,9 +627,7 @@ end
 
 local function detectCompositor()
   local forced = configString("compositor", "auto")
-  if forced ~= "auto" then
-    return forced
-  end
+  if forced ~= "auto" then return forced end
   if noctalia.getenv("MANGO_INSTANCE_SIGNATURE") ~= nil then return "mango" end
   if noctalia.getenv("HYPRLAND_INSTANCE_SIGNATURE") ~= nil then return "hyprland" end
   if noctalia.getenv("NIRI_SOCKET") ~= nil then return "niri" end
@@ -601,6 +671,8 @@ local function normalizedCache(decoded)
         key = item.key,
         action = item.action,
         description = type(item.description) == "string" and item.description or "",
+        section = type(item.section) == "string" and item.section or "",
+        subsection = type(item.subsection) == "string" and item.subsection or "",
         category = type(item.category) == "string" and item.category or "Other",
         sourceFile = type(item.sourceFile) == "string" and item.sourceFile or "",
         sourceLine = tonumber(item.sourceLine) or 0,
@@ -771,8 +843,6 @@ end
 function onIpc(event, _payload)
   if event == "refresh" then
     refresh()
-  elseif event == "self-test" then
-    runSelfTest()
   end
 end
 
@@ -793,25 +863,42 @@ end)
 bootstrap()
 
 return {
+  -- Parser & Lexer functions
+  parseHeading = parseHeading,
+  buildCategory = buildCategory,
+  niriCategoryFor = niriCategoryFor,
   parseMangoContent = parseMangoContent,
-  mangoCategoryFromComment = mangoCategoryFromComment,
   parseHyprContent = parseHyprContent,
   parseNiriContent = parseNiriContent,
   parseHyprJson = parseHyprJson,
   scanHyprLua = scanHyprLua,
+  scanHyprLuaContent = scanHyprLuaContent,
+  fallbackCategory = fallbackCategory,
+
+  -- Path & normalization utilities
+  normalizeModifiers = normalizeModifiers,
+  modifiersFromMask = modifiersFromMask,
+  bindingIdentity = bindingIdentity,
+  addBinding = addBinding,
   walkConfig = walkConfig,
-  configReadError = configReadError,
+  normalizePath = normalizePath,
+  expandEnvironment = expandEnvironment,
+
+  -- Runtime & State management
+  detectCompositor = detectCompositor,
   currentRequest = currentRequest,
   requestsMatch = requestsMatch,
   normalizedCache = normalizedCache,
+  readBindingCache = readBindingCache,
+  saveBindingCache = saveBindingCache,
   refresh = refresh,
   bootstrap = bootstrap,
-  resetForTests = resetForTests,
-  lifecycleState = lifecycleState,
   onConfigChanged = onConfigChanged,
   onIpc = onIpc,
   onExit = onExit,
-  runSelfTest = runSelfTest,
+
+  -- Constants / Keys
   snapshotKey = SNAPSHOT_KEY,
   refreshRequestKey = REFRESH_REQUEST_KEY,
+  selfTestRequestKey = SELF_TEST_REQUEST_KEY,
 }

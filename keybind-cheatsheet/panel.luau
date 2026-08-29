@@ -3,6 +3,7 @@
 --
 -- Parsing, durable cache ownership, and refreshes live in service.luau. This
 -- panel only reads the shared snapshot and renders it.
+-- Hierarchical category presentation.
 
 local noctalia = noctalia
 local ui = ui
@@ -48,7 +49,6 @@ local function tr(key, values)
   return noctalia.tr(key, values)
 end
 
--- Fast O(N) Two-Point Boundary Trim
 local function trim(s)
   if not s or s == "" then return "" end
   local from = s:match("^%s*()")
@@ -147,21 +147,6 @@ local function formatKey(key)
   return key:gsub("^mouse:", "Mouse ")
 end
 
-local function niriCategoryFor(action)
-  local value = lower(action)
-  if startsWith(value, "spawn") then return "Applications" end
-  if startsWith(value, "focus-column-") then return "Column Navigation" end
-  if startsWith(value, "focus-window-") then return "Window Focus" end
-  if startsWith(value, "focus-workspace-") then return "Workspace Navigation" end
-  if startsWith(value, "move-column-") then return "Move Columns" end
-  if startsWith(value, "move-window-") then return "Move Windows" end
-  if startsWith(value, "screenshot") then return "Screenshots" end
-  if startsWith(value, "close-window") or startsWith(value, "fullscreen-window") then return "Window Management" end
-  if startsWith(value, "power-off-monitors") then return "Power" end
-  if startsWith(value, "quit") then return "System" end
-  return "Other"
-end
-
 local function preferencesPath()
   local directory, err = noctalia.pluginDataDir()
   if directory == nil then
@@ -221,7 +206,6 @@ local function savePreferences()
   end
 end
 
--- Pre-indexes search tokens directly on snapshot arrival
 local function enrichBinding(binding)
   local mods = binding.modifiers or {}
   binding._lowerMod = lower(table.concat(mods, " "))
@@ -264,6 +248,10 @@ refresh = function()
   noctalia.state.set(REFRESH_REQUEST_KEY, current + 1)
   render()
 end
+
+-- ============================================================================
+-- Color Appearance & Theming Customization
+-- ============================================================================
 
 local COLOR_BUCKETS = {
   { id = "super", label = "Super", background = "primary", text = "on_primary", picker = "#6750A4" },
@@ -338,10 +326,6 @@ local function pasteColor(bucketId, property)
   else
     noctalia.notifyError(tr("title"), "Clipboard does not contain a #RRGGBB color")
   end
-end
-
-local function bindingContentOpacity(hidden)
-  return hidden and 0.45 or 1
 end
 
 local function keyPill(text, bucketId, key)
@@ -459,13 +443,10 @@ local function effectiveDescription(binding)
 end
 
 local function effectiveCategory(binding)
-  if binding.baseCategory ~= nil and binding.baseCategory ~= "" then
-    return binding.baseCategory
+  if binding.category ~= nil and binding.category ~= "" and binding.category ~= "General" then
+    return binding.category
   end
-  if authoredDescription(binding) == "" and binding.compositor ~= "niri" then
-    return tr("without_description")
-  end
-  return binding.compositor == "niri" and niriCategoryFor(binding.action) or tr("other")
+  return tr("other")
 end
 
 local SEARCH_MODIFIER_ALIASES = {
@@ -660,7 +641,7 @@ end
 
 local function bindingRow(binding, occurrence)
   local hidden = preferences.hidden[binding.id] == true
-  local contentOpacity = bindingContentOpacity(hidden)
+  local contentOpacity = hidden and 0.45 or 1
   local pills = {}
 
   for index, modifier in ipairs(binding.modifiers) do
@@ -670,7 +651,8 @@ local function bindingRow(binding, occurrence)
   table.insert(pills, keyPill(binding._formattedKey or formatKey(binding.key), bucketForKey(binding.key), "key"))
 
   local description = effectiveDescription(binding)
-  local identity = binding.id .. "#" .. occurrence
+  local identity = binding.id .. "#" .. (occurrence or 1)
+
   if view == "edit" and editingId == identity then
     local visibilityChanged = callback("visibility", function()
       preferences.hidden[binding.id] = not hidden and true or nil
@@ -706,10 +688,12 @@ local function bindingRow(binding, occurrence)
   if noctalia.getConfig("show_actions") ~= false and description ~= "" and binding.action ~= "" then
     table.insert(labels, ui.label({ text = binding.action, color = "on_surface_variant", fontSize = 11, maxLines = 1 }))
   end
+
   local row = {
     ui.row({ minWidth = 188, gap = 3, align = "center", opacity = contentOpacity }, pills),
     ui.column({ flexGrow = 1, gap = 0, opacity = contentOpacity }, labels),
   }
+
   if view == "edit" then
     local edit = callback("edit", function()
       editingId = identity
@@ -724,20 +708,39 @@ local function bindingRow(binding, occurrence)
     table.insert(row, ui.button({ glyph = "pencil", width = 22, height = 22, glyphSize = 12, variant = "ghost", controlSize = "sm", tooltip = tr("edit_description"), onClick = edit }))
     table.insert(row, ui.button({ glyph = hidden and "eye-off" or "eye", width = 22, height = 22, glyphSize = 13, variant = "ghost", controlSize = "sm", selected = hidden, tooltip = hidden and tr("show_binding") or tr("hide_binding"), onClick = visibilityChanged }))
   end
+
   return ui.row({ key = identity, gap = 6, align = "center", paddingV = 0 }, row)
 end
 
 local function categoryNode(group)
-  local children = {
-    ui.label({ text = string.upper(group.name), color = "primary", fontSize = 14, fontWeight = "bold" }),
-    ui.separator({ color = "outline", thickness = 1, spacing = 1 }),
-  }
+  local mainSection, subSection = group.name:match("^(.-)%s*•%s*(.+)$")
+  local headerNodes = {}
+
+  if mainSection and subSection then
+    table.insert(headerNodes, ui.row({ gap = 6, align = "center" }, {
+      ui.label({ text = mainSection:upper(), color = "on_surface_variant", fontSize = 11, fontWeight = "bold" }),
+      ui.glyph({ name = "chevron-right", size = 11, color = "on_surface_variant" }),
+      ui.label({ text = subSection, color = "primary", fontSize = 13, fontWeight = "bold" }),
+    }))
+  else
+    table.insert(headerNodes, ui.label({
+      text = string.upper(group.name),
+      color = "primary",
+      fontSize = 13,
+      fontWeight = "bold",
+    }))
+  end
+
+  table.insert(headerNodes, ui.separator({ color = "outline/0.25", thickness = 1, spacing = 2 }))
+
+  local children = headerNodes
   local occurrences = {}
   for _, binding in ipairs(group.bindings) do
     occurrences[binding.id] = (occurrences[binding.id] or 0) + 1
     table.insert(children, bindingRow(binding, occurrences[binding.id]))
   end
-  return ui.column({ key = "category-" .. group.name, gap = 1, paddingV = 3, align = "stretch" }, children)
+
+  return ui.column({ key = "category-" .. group.name, gap = 2, paddingV = 4, align = "stretch" }, children)
 end
 
 local function bindingsBody()
@@ -758,10 +761,6 @@ local function bindingsBody()
   return ui.scroll({ flexGrow = 1, gap = 0 }, {
     ui.row({ key = "binding-columns", gap = 22, align = "stretch" }, columnNodes),
   })
-end
-
-local function hiddenCount()
-  return hiddenBindingCount(bindings, preferences.hidden)
 end
 
 local function colorControl(bucket, property)
@@ -822,16 +821,19 @@ local function renderHeader()
     editDraft = ""
     render()
   end)
+
   local title = tr("title")
   if currentCompositor ~= "" then
     title = (currentCompositor == "mango" and "Mango" or (currentCompositor == "niri" and "Niri" or "Hyprland")) .. " Keymap"
   end
+
   local children = {
     ui.row({ minWidth = 230, gap = 7, align = "center", flexGrow = 1 }, {
       ui.glyph({ name = "keyboard", size = 16, color = "primary" }),
       ui.label({ text = title, fontSize = 15, fontWeight = "bold", color = "on_surface" }),
     }),
   }
+
   if (view == "bindings" or view == "edit") and not loading and panelError == nil then
     local searchChanged = callback("search", function(value)
       query = value
@@ -844,38 +846,25 @@ local function renderHeader()
       searchFocused = true
       render()
     end)
-    local onSearchFocus = callback("searchFocused", function()
-      searchFocused = true
-    end)
-    local onSearchBlur = callback("searchBlurred", function()
-      searchFocused = false
-    end)
-
-    local placeholderText = tr("search_placeholder")
-    if placeholderText == nil or placeholderText == "" or placeholderText == "search_placeholder" then
-      placeholderText = "Search keybinds... (/)"
-    else
-      placeholderText = placeholderText .. " (/)"
-    end
 
     table.insert(children, ui.input({
       key = "search-" .. searchRevision,
       value = query,
-      placeholder = placeholderText,
+      placeholder = "Search keybinds... (/)",
       focus = (view == "bindings" and editingId == nil and searchFocused),
       controlSize = "sm",
       width = 300,
       onChange = searchChanged,
-      onFocus = onSearchFocus,
-      onBlur = onSearchBlur,
     }))
     table.insert(children, ui.button({ glyph = "x", width = 26, variant = "ghost", controlSize = "sm", enabled = query ~= "", tooltip = tr("clear"), onClick = clearSearch }))
   end
+
   if not loading or #bindings > 0 then
     table.insert(children, ui.label({ text = tr("binding_count", { count = #bindings }), color = "on_surface_variant", fontSize = 12 }))
   end
+
   if view == "edit" then
-    local count = hiddenCount()
+    local count = hiddenBindingCount(bindings, preferences.hidden)
     local restoreHidden = callback("restoreHidden", function()
       restoreHiddenBindings(bindings, preferences.hidden)
       savePreferences()
@@ -884,9 +873,11 @@ local function renderHeader()
     table.insert(children, ui.label({ text = tr("hidden_count", { count = count }), color = "on_surface_variant", fontSize = 12 }))
     table.insert(children, ui.button({ glyph = "eye", variant = "ghost", controlSize = "sm", enabled = count > 0, tooltip = tr("restore_hidden"), onClick = restoreHidden }))
   end
+
   table.insert(children, ui.button({ glyph = "refresh", variant = "ghost", tooltip = tr("refresh"), enabled = true, onClick = refreshClick }))
   table.insert(children, ui.button({ glyph = view == "edit" and "check" or "pencil", variant = "ghost", tooltip = view == "edit" and tr("finish_editing") or tr("edit_bindings"), selected = view == "edit", onClick = editMode }))
   table.insert(children, ui.button({ glyph = view == "appearance" and "check" or "palette", variant = "ghost", tooltip = view == "appearance" and tr("back") or tr("appearance"), selected = view == "appearance", onClick = appearance }))
+
   return ui.row({ align = "center", justify = "space_between", gap = 7 }, children)
 end
 
@@ -904,27 +895,8 @@ render = function()
     contentState = "edit"
   end
 
-  local handleKeyPress = callback("rootKeyPress", function(keyEvent)
-    local keyName = type(keyEvent) == "table" and keyEvent.key or tostring(keyEvent or "")
-    if keyName == "/" or keyName == "slash" then
-      if editingId == nil and not searchFocused then
-        searchFocused = true
-        searchRevision += 1
-        render()
-      end
-    elseif keyName == "Escape" or keyName == "esc" then
-      if query ~= "" then
-        query = ""
-        searchRevision += 1
-        searchFocused = true
-        render()
-      elseif panelOpen then
-        panel.close()
-      end
-    end
-  end)
-
   local children = { renderHeader() }
+
   if view == "appearance" then
     table.insert(children, appearanceBody())
   elseif loading then
@@ -952,8 +924,6 @@ render = function()
     flexGrow = 1,
     gap = 8,
     align = "stretch",
-    onKeyPress = handleKeyPress,
-    onKeyDown = handleKeyPress,
   }, children))
 end
 
@@ -961,27 +931,6 @@ noctalia.state.watch(SNAPSHOT_KEY, function(value)
   applySnapshot(value)
   if panelOpen then render() end
 end)
-
-local function releasePanelState(clearModel)
-  panelOpen = false
-  view = "bindings"
-  query = ""
-  searchFocused = false
-  editingId = nil
-  editDraft = ""
-  refreshing = false
-  resetCallbacks()
-  if clearModel then
-    bindings = {}
-    parseWarnings = {}
-    currentCompositor = ""
-    loading = false
-    refreshing = false
-    panelError = nil
-    refreshError = nil
-    snapshot = nil
-  end
-end
 
 function onOpen(_context)
   panelOpen = true
@@ -998,15 +947,30 @@ function onOpen(_context)
 end
 
 function onClose()
-  releasePanelState(false)
+  panelOpen = false
+  view = "bindings"
+  query = ""
+  searchFocused = false
+  editingId = nil
+  editDraft = ""
+  refreshing = false
+  resetCallbacks()
 end
 
-function onExit(_signal)
-  releasePanelState(true)
-end
-
-function onConfigChanged()
-  if panelOpen then render() end
+function onKey(chord, pressed)
+  if not pressed then return end
+  if chord == "q" or chord == "Escape" then
+    if query ~= "" then
+      query = ""
+      searchRevision += 1
+      searchFocused = true
+      render()
+    else
+      panel.close()
+    end
+  elseif chord == "r" and view ~= "appearance" and editingId == nil then
+    refresh()
+  end
 end
 
 function onIpc(event, _payload)
@@ -1018,38 +982,5 @@ function onIpc(event, _payload)
     searchFocused = true
     searchRevision += 1
     render()
-  elseif event == "self-test" then
-    local current = tonumber(noctalia.state.get(SELF_TEST_REQUEST_KEY)) or 0
-    noctalia.state.set(SELF_TEST_REQUEST_KEY, current + 1)
   end
 end
-
-local function lifecycleState()
-  return {
-    panelOpen = panelOpen,
-    loading = loading,
-    refreshing = refreshing,
-    bindingCount = #bindings,
-    snapshotLoaded = snapshot ~= nil,
-    callbackCount = #dynamicCallbacks,
-    editDraft = editDraft,
-    searchFocused = searchFocused,
-  }
-end
-
-return {
-  formatKey = formatKey,
-  bindingAvailableInView = bindingAvailableInView,
-  bindingContentOpacity = bindingContentOpacity,
-  hiddenBindingCount = hiddenBindingCount,
-  restoreHiddenBindings = restoreHiddenBindings,
-  categoryPriority = categoryPriority,
-  friendlyAction = friendlyAction,
-  keyPill = keyPill,
-  applySnapshot = applySnapshot,
-  onOpen = onOpen,
-  onClose = onClose,
-  onExit = onExit,
-  onIpc = onIpc,
-  lifecycleState = lifecycleState,
-}

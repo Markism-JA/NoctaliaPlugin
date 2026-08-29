@@ -1,7 +1,7 @@
 id = "kenn/keybind-cheatsheet"
 name = "Keybind Cheatsheet"
 version = "0.2.4"
-plugin_api = 9
+plugin_api = 22
 author = "kenn"
 license = "MIT"
 dependencies = ["hyprctl"]
@@ -97,7 +97,9 @@ width = 1500
 height = 760
 placement = "floating"
 position = "center"
-open_near_click = true
+open_near_click = false
+keyboard_focus = "exclusive"
+capture_keys = ["q", "Escape", "r"]
 
 [[widget]]
 id = "keybinds"
