@@ -2,7 +2,7 @@
 --- Subprocess execution and stream handling helpers for Noctalia.
 --- Provides safe asynchronous execution, detached process spawning, persistent stream
 --- management, and host environment fallback for both live shell runtimes and CLI test harnesses.
-local test = require("./test")
+local test = require("./test.luau")
 
 local proc = {}
 

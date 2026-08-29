@@ -8,7 +8,9 @@ function filesystem.join(...: string): string
 	local cleanParts: { string } = {}
 	for _, part in ipairs(parts) do
 		if part ~= "" then
-			table.insert(cleanParts, part)
+			-- Strip trailing slash from individual components
+			local clean = string.gsub(part, "/+$", "")
+			table.insert(cleanParts, clean)
 		end
 	end
 	return table.concat(cleanParts, "/")
@@ -26,22 +28,30 @@ function filesystem.dirName(path: string): string
 	return dir or "."
 end
 
+--- Expands ~ and relative paths safely.
+local function safeExpand(path: string): string
+	if string.sub(path, 1, 1) == "~" and (noctalia :: any) ~= nil and (noctalia :: any).expandPath ~= nil then
+		return noctalia.expandPath(path)
+	end
+	return path
+end
+
 --- Reads an entire text file synchronously.
 function filesystem.readText(path: string): (string?, string?)
-	local expanded = noctalia.expandPath(path)
+	local expanded = safeExpand(path)
 	return noctalia.readFile(expanded)
 end
 
---- Writes content to a file, recursively creating parent directories if missing.
+--- Writes content to a file, ensuring parent directories exist without failing on EEXIST.
 function filesystem.writeText(path: string, content: string): (boolean, string?)
-	local expanded = noctalia.expandPath(path)
+	local expanded = safeExpand(path)
 	local parentDir = filesystem.dirName(expanded)
 
-	if parentDir ~= "." and not noctalia.fileExists(parentDir) then
-		local ok, err = noctalia.mkdirAll(parentDir)
-		if not ok then
-			return false, err
-		end
+	if parentDir ~= "." and (noctalia :: any) ~= nil and (noctalia :: any).mkdirAll ~= nil then
+		-- Attempt mkdirAll but do not fail if the directory already exists
+		pcall(function()
+			noctalia.mkdirAll(parentDir)
+		end)
 	end
 
 	return noctalia.writeFile(expanded, content)
@@ -56,7 +66,7 @@ function filesystem.readJson(path: string): (any?, string?)
 
 	local data, decodeErr = noctalia.json.decode(content)
 	if decodeErr then
-		return nil, "JSON parse error: " .. decodeErr
+		return nil, "JSON parse error: " .. tostring(decodeErr)
 	end
 
 	return data, nil
@@ -81,7 +91,7 @@ end
 function filesystem.readPluginData(fileName: string): (any?, string?)
 	local dir, err = filesystem.getDataDir()
 	if not dir then
-		return nil, err
+		return nil, err or "Could not resolve pluginDataDir"
 	end
 	return filesystem.readJson(filesystem.join(dir, fileName))
 end
@@ -90,7 +100,7 @@ end
 function filesystem.writePluginData(fileName: string, value: any, pretty: boolean?): (boolean, string?)
 	local dir, err = filesystem.getDataDir()
 	if not dir then
-		return false, err
+		return false, err or "Could not resolve pluginDataDir"
 	end
 	return filesystem.writeJson(filesystem.join(dir, fileName), value, pretty)
 end

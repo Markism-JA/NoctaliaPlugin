@@ -1,12 +1,12 @@
 --!strict
-local compat = require("./compat")
-local config = require("./config")
-local filesystem = require("./filesystem")
-local lifecycle = require("./lifecycle")
-local log = require("./log")
-local proc = require("./proc")
-local state = require("./state")
-local test = require("./test")
+local compat = require("./compat.luau")
+local config = require("./config.luau")
+local filesystem = require("./filesystem.luau")
+local lifecycle = require("./lifecycle.luau")
+local log = require("./log.luau")
+local proc = require("./proc.luau")
+local state = require("./state.luau")
+local test = require("./test.luau")
 
 export type StateChannel<T> = state.StateChannel<T>
 export type Logger = log.Logger

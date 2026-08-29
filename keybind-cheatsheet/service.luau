@@ -1,7 +1,7 @@
 --!strict
 -- Cache-first keybind data service for Mango, Hyprland, and Niri.
 
-local stl = require("../stl/stl")
+local stl = require("../stl/stl.luau")
 local config = stl.config
 local filesystem = stl.filesystem
 local lifecycle = stl.lifecycle
@@ -475,13 +475,11 @@ function service.parseMangoContent(content: string, sourceFile: string, context:
 				local clean, description = service.extractTrailingDescription(line)
 				local directive, body = string.match(clean, "^([%a]*bind)%s*=%s*(.*)$")
 				if directive ~= nil and body ~= nil then
-					-- Split all comma-separated parts
 					local fields = service.splitCsv(body)
 					local modifiers = service.normalizeModifiers(fields[1], nil)
 					local key = fields[2] or ""
 					local command = fields[3] or ""
 
-					-- Gather all remaining fields (4, 5, 6...) as parameters
 					local restParts: { string } = {}
 					for i = 4, #fields do
 						if fields[i] ~= "" then
@@ -712,7 +710,9 @@ function service.scanHyprLua(rootPath: string): ParseContext
 				or string.find(modName, "workspaces", 1, true)
 				or string.find(modName, "gloview", 1, true)
 			then
-				table.insert(fileList, filesystem.join(luaRoot, string.gsub(modName, "%.", "/") .. ".lua"))
+				local relPath: string = (string.gsub(modName, "%.", "/")) .. ".lua"
+				local fullModPath: string = filesystem.join(luaRoot, relPath)
+				table.insert(fileList, fullModPath)
 			end
 		end
 	end
@@ -1049,9 +1049,13 @@ local function publish(
 	})
 end
 
+-- Forward Declarations
 local refresh: (BindingRequest?) -> ()
+local performRefresh: (number, BindingRequest) -> ()
+local refreshHyprLua: (number, BindingRequest) -> ()
+local finishRefresh: (number, BindingRequest, { BindingEntry }, { string }, string?, ParseContext?) -> ()
 
-local function finishRefresh(
+finishRefresh = function(
 	generation: number,
 	request: BindingRequest,
 	result: { BindingEntry },
@@ -1060,6 +1064,7 @@ local function finishRefresh(
 	sourceSnapshot: ParseContext?
 )
 	if generation ~= refreshGeneration then
+		log.warn("finishRefresh aborted: generation mismatch", { gen = generation, expected = refreshGeneration })
 		return
 	end
 	refreshing = false
@@ -1071,7 +1076,14 @@ local function finishRefresh(
 			warnings = warnings,
 			sources = if sourceSnapshot then sourceSnapshot.sources else {},
 		}
-		filesystem.writePluginData(BINDINGS_CACHE_FILE, lastGood, false)
+
+		local writeOk, writeErr = filesystem.writePluginData(BINDINGS_CACHE_FILE, lastGood, false)
+		if not writeOk then
+			log.error("Failed to write cache file", { error = tostring(writeErr) })
+		else
+			log.info("Successfully wrote bindings-cache.json", { count = #result })
+		end
+
 		publish("ready", request, lastGood, "", false)
 		log.info("Keybindings parsed successfully", { count = #result, compositor = request.compositor })
 	else
@@ -1085,7 +1097,7 @@ local function finishRefresh(
 	end
 end
 
-local function refreshHyprLua(generation: number, request: BindingRequest)
+refreshHyprLua = function(generation: number, request: BindingRequest)
 	if not noctalia.commandExists("hyprctl") then
 		finishRefresh(generation, request, {}, {}, noctalia.tr("hyprctl_missing"), nil)
 		return
@@ -1125,7 +1137,7 @@ local function refreshHyprLua(generation: number, request: BindingRequest)
 	end)
 end
 
-local function performRefresh(generation: number, request: BindingRequest)
+performRefresh = function(generation: number, request: BindingRequest)
 	if request.parser == "mango" then
 		local context = walkConfig(request.root, service.parseMangoContent, "%.conf$")
 		finishRefresh(generation, request, context.bindings, context.warnings, nil, context)
