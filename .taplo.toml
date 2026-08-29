@@ -1,0 +1,7 @@
+# .taplo.toml
+
+[[rule]]
+include = ["**/manifest.toml", "**/plugin.toml", "plugins/**/*.toml"]
+
+[rule.schema]
+path = "schema/manifest.schema.json"

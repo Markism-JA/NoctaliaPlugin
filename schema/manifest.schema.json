@@ -1,0 +1,712 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "Noctalia Plugin Manifest",
+    "description": "Configuration manifest schema for Noctalia desktop plugins and entries (manifest.toml).",
+    "type": "object",
+    "required": [
+        "id",
+        "name",
+        "version",
+        "plugin_api"
+    ],
+    "defaultSnippets": [
+        {
+            "label": "[[widget]] Entry",
+            "description": "Bar widget entry placed on a desktop bar",
+            "body": "[[widget]]\nid = \"${1:widget_id}\"\nentry = \"${2:widget.luau}\""
+        },
+        {
+            "label": "[[widget.setting]]",
+            "description": "Widget-scoped presentation setting (singular)",
+            "body": "[[widget.setting]]\nkey = \"${1:setting_key}\"\ntype = \"${2|string,bool,int,double,select,file,folder,glyph,color,string_map,string_list|}\"\nlabel_key = \"settings.${1:setting_key}.label\"\ndefault = ${3:\"default_val\"}"
+        },
+        {
+            "label": "[widget.actions]",
+            "description": "Default mouse gesture actions for the widget",
+            "body": "[widget.actions]\nleft = \"${1:action}\"\nright = \"${2:media toggle}\"\nmiddle = \"${3:none}\"\nscroll_up = \"${4:volume-up}\"\nscroll_down = \"${5:volume-down}\""
+        },
+        {
+            "label": "[[panel]] Entry",
+            "description": "Pop-up UI surface entry",
+            "body": "[[panel]]\nid = \"${1:panel_id}\"\nentry = \"${2:panel.luau}\"\nwidth = ${3:600}\nheight = ${4:400}\nplacement = \"${5|floating,anchored,sidebar|}\"\nposition = \"${6|center,top,bottom,left,right,top_left,top_right,bottom_left,bottom_right|}\"\nkeyboard_focus = \"${7|exclusive,on_demand,none|}\""
+        },
+        {
+            "label": "[[panel.setting]]",
+            "description": "Panel-scoped setting",
+            "body": "[[panel.setting]]\nkey = \"${1:setting_key}\"\ntype = \"${2|string,bool,int,double,select,file,folder,glyph,color,string_map,string_list|}\"\nlabel_key = \"settings.${1:setting_key}.label\"\ndefault = ${3:\"default_val\"}"
+        },
+        {
+            "label": "[[service]] Entry",
+            "description": "Headless background service entry",
+            "body": "[[service]]\nid = \"${1:service_id}\"\nentry = \"${2:service.luau}\""
+        },
+        {
+            "label": "[[shortcut]] Entry",
+            "description": "Control Center quick-toggle tile",
+            "body": "[[shortcut]]\nid = \"${1:shortcut_id}\"\nentry = \"${2:shortcut.luau}\""
+        },
+        {
+            "label": "[[launcher_provider]] Entry",
+            "description": "Application launcher query provider",
+            "body": "[[launcher_provider]]\nid = \"${1:finder}\"\nentry = \"${2:finder.luau}\"\nprefix = \"${3:ex}\"\nglyph = \"${4:list-search}\"\ninclude_in_global_search = ${5:false}"
+        },
+        {
+            "label": "[[setting]] (String)",
+            "description": "Plugin-level string setting",
+            "body": "[[setting]]\nkey = \"${1:key_name}\"\ntype = \"string\"\nlabel_key = \"settings.${1:key_name}.label\"\ndescription_key = \"settings.${1:key_name}.description\"\ndefault = \"${2:value}\""
+        },
+        {
+            "label": "[[setting]] (Bool)",
+            "description": "Plugin-level boolean toggle setting",
+            "body": "[[setting]]\nkey = \"${1:key_name}\"\ntype = \"bool\"\nlabel_key = \"settings.${1:key_name}.label\"\ndescription_key = \"settings.${1:key_name}.description\"\ndefault = ${2|true,false|}"
+        },
+        {
+            "label": "[[setting]] (Int/Number)",
+            "description": "Plugin-level integer setting with bounds",
+            "body": "[[setting]]\nkey = \"${1:interval}\"\ntype = \"int\"\nlabel_key = \"settings.${1:interval}.label\"\ndescription_key = \"settings.${1:interval}.description\"\ndefault = ${2:5}\nmin = ${3:1}\nmax = ${4:60}\nstep = ${5:1}"
+        },
+        {
+            "label": "[[setting]] (File Picker)",
+            "description": "Plugin-level file picker setting",
+            "body": "[[setting]]\nkey = \"${1:config_path}\"\ntype = \"file\"\nlabel_key = \"settings.${1:config_path}.label\"\ndescription_key = \"settings.${1:config_path}.description\"\ndefault = \"${2:~/.config/app/config.conf}\"\nextensions = [\"${3:.conf}\", \"${4:.toml}\"]"
+        },
+        {
+            "label": "[[setting]] (Select Dropdown)",
+            "description": "Plugin-level dropdown select setting",
+            "body": "[[setting]]\nkey = \"${1:mode}\"\ntype = \"select\"\nlabel_key = \"settings.${1:mode}.label\"\ndescription_key = \"settings.${1:mode}.description\"\ndefault = \"${2:auto}\"\noptions = [\n  { value = \"${2:auto}\", label_key = \"settings.${1:mode}.options.auto\" },\n  { value = \"${3:manual}\", label_key = \"settings.${1:mode}.options.manual\" },\n]"
+        }
+    ],
+    "properties": {
+        "id": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+$",
+            "description": "Globally unique plugin identifier in '<author>/<plugin>' format.",
+            "x-taplo": {
+                "docs": {
+                    "main": "**Plugin ID** (`id`)\n\nGlobally unique plugin identifier formatted as `<author>/<plugin>` (e.g. `kenn/keybind-cheatsheet`)."
+                }
+            }
+        },
+        "name": {
+            "type": "string",
+            "minLength": 1,
+            "description": "User-facing display name of the plugin.",
+            "x-taplo": {
+                "docs": {
+                    "main": "**Plugin Name** (`name`)\n\nUser-facing display name shown in plugin listings, catalogs, and settings menus."
+                }
+            }
+        },
+        "version": {
+            "type": "string",
+            "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)$",
+            "description": "Semantic versioning (MAJOR.MINOR.PATCH).",
+            "x-taplo": {
+                "docs": {
+                    "main": "**Plugin Version** (`version`)\n\nStrict semantic versioning using `MAJOR.MINOR.PATCH` with non-negative decimal integers and no leading zeros."
+                }
+            }
+        },
+        "plugin_api": {
+            "type": "integer",
+            "minimum": 3,
+            "maximum": 28,
+            "description": "Oldest Noctalia Plugin API level required by this plugin.",
+            "x-taplo": {
+                "docs": {
+                    "main": "**Plugin API Level** (`plugin_api`)\n\nOldest Plugin API level required by this plugin (e.g. `3` through `28`). API levels are cumulative."
+                }
+            }
+        },
+        "author": {
+            "type": "string",
+            "description": "Author name or handle."
+        },
+        "license": {
+            "type": "string",
+            "default": "MIT",
+            "description": "Software license identifier (defaults to 'MIT')."
+        },
+        "deprecated": {
+            "type": "boolean",
+            "default": false,
+            "description": "Soft status marker indicating the plugin is deprecated."
+        },
+        "icon": {
+            "type": "string",
+            "description": "Icon glyph name for catalog search and listings (e.g. 'keyboard', 'puzzle')."
+        },
+        "description": {
+            "type": "string",
+            "description": "Short summary explaining the purpose of the plugin."
+        },
+        "tags": {
+            "type": "array",
+            "items": {
+                "type": "string"
+            },
+            "description": "Tags used for catalog search and categorization."
+        },
+        "dependencies": {
+            "type": "array",
+            "items": {
+                "type": "string"
+            },
+            "description": "External tools/packages users must install (e.g. ['hyprctl', 'slurp'])."
+        },
+        "setting": {
+            "type": "array",
+            "description": "Plugin-level global settings shared across all entries.",
+            "items": {
+                "type": "object",
+                "required": [
+                    "key",
+                    "type",
+                    "label_key"
+                ],
+                "properties": {
+                    "key": {
+                        "type": "string",
+                        "pattern": "^[a-zA-Z0-9_-]+$",
+                        "description": "Config key read back via noctalia.getConfig(key)."
+                    },
+                    "type": {
+                        "type": "string",
+                        "enum": [
+                            "string",
+                            "string_list",
+                            "string_map",
+                            "bool",
+                            "int",
+                            "double",
+                            "select",
+                            "file",
+                            "folder",
+                            "glyph",
+                            "color"
+                        ],
+                        "description": "Control data type rendered in settings UI."
+                    },
+                    "label_key": {
+                        "type": "string",
+                        "description": "Translation key located in translations/<lang>.json for the title label."
+                    },
+                    "description_key": {
+                        "type": "string",
+                        "description": "Translation key located in translations/<lang>.json for the description/tooltip."
+                    },
+                    "default": {
+                        "description": "Seeded initial value matching the defined setting type."
+                    },
+                    "min": {
+                        "type": "number",
+                        "description": "Lower bound clamp for numeric settings."
+                    },
+                    "max": {
+                        "type": "number",
+                        "description": "Upper bound clamp for numeric settings."
+                    },
+                    "step": {
+                        "type": "number",
+                        "description": "Step increment for numeric sliders and spinners."
+                    },
+                    "advanced": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "Hides setting behind the 'Show Advanced' toggle."
+                    },
+                    "extensions": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "description": "File extension filters for file pickers (e.g. ['.conf', '.json'])."
+                    },
+                    "options": {
+                        "type": "array",
+                        "description": "Dropdown selection options required when type = 'select'.",
+                        "items": {
+                            "type": "object",
+                            "required": [
+                                "value",
+                                "label_key"
+                            ],
+                            "properties": {
+                                "value": {
+                                    "type": "string",
+                                    "description": "The configuration value stored and returned by noctalia.getConfig()."
+                                },
+                                "label_key": {
+                                    "type": "string",
+                                    "description": "Translation key in translations/<lang>.json for the dropdown option."
+                                }
+                            }
+                        }
+                    },
+                    "visible_when": {
+                        "type": "object",
+                        "required": [
+                            "key",
+                            "values"
+                        ],
+                        "description": "Conditional UI visibility rule based on another setting's value.",
+                        "properties": {
+                            "key": {
+                                "type": "string",
+                                "description": "Target setting key to evaluate."
+                            },
+                            "values": {
+                                "type": "array",
+                                "items": {
+                                    "type": "string"
+                                },
+                                "description": "Values that make this setting visible."
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "widget": {
+            "type": "array",
+            "description": "Bar widget entries placed directly on desktop bars.",
+            "items": {
+                "type": "object",
+                "required": [
+                    "id",
+                    "entry"
+                ],
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "pattern": "^[a-zA-Z0-9_-]+$",
+                        "description": "Unique entry identifier within this plugin."
+                    },
+                    "entry": {
+                        "type": "string",
+                        "pattern": "\\.luau$",
+                        "description": "Relative path to the widget Luau script (e.g. 'widget.luau')."
+                    },
+                    "actions": {
+                        "type": "object",
+                        "description": "Default gesture actions on click and scroll (requires plugin_api >= 14).",
+                        "properties": {
+                            "left": {
+                                "type": "string",
+                                "description": "Action executed on primary mouse click."
+                            },
+                            "right": {
+                                "type": "string",
+                                "description": "Action executed on secondary mouse click."
+                            },
+                            "middle": {
+                                "type": "string",
+                                "description": "Action executed on middle click ('none' allows script onMiddleClick callback)."
+                            },
+                            "scroll_up": {
+                                "type": "string",
+                                "description": "Action executed on upward mouse scroll."
+                            },
+                            "scroll_down": {
+                                "type": "string",
+                                "description": "Action executed on downward mouse scroll."
+                            }
+                        }
+                    },
+                    "setting": {
+                        "type": "array",
+                        "description": "Widget-scoped presentation settings.",
+                        "items": {
+                            "type": "object",
+                            "required": [
+                                "key",
+                                "type",
+                                "label_key"
+                            ],
+                            "properties": {
+                                "key": {
+                                    "type": "string",
+                                    "pattern": "^[a-zA-Z0-9_-]+$",
+                                    "description": "Config key read back via noctalia.getConfig(key)."
+                                },
+                                "type": {
+                                    "type": "string",
+                                    "enum": [
+                                        "string",
+                                        "string_list",
+                                        "string_map",
+                                        "bool",
+                                        "int",
+                                        "double",
+                                        "select",
+                                        "file",
+                                        "folder",
+                                        "glyph",
+                                        "color"
+                                    ],
+                                    "description": "Control data type rendered in settings UI."
+                                },
+                                "label_key": {
+                                    "type": "string",
+                                    "description": "Translation key located in translations/<lang>.json for the title label."
+                                },
+                                "description_key": {
+                                    "type": "string",
+                                    "description": "Translation key located in translations/<lang>.json for description/tooltip."
+                                },
+                                "default": {
+                                    "description": "Seeded initial value matching the defined setting type."
+                                },
+                                "min": {
+                                    "type": "number",
+                                    "description": "Lower bound clamp for numeric settings."
+                                },
+                                "max": {
+                                    "type": "number",
+                                    "description": "Upper bound clamp for numeric settings."
+                                },
+                                "step": {
+                                    "type": "number",
+                                    "description": "Step increment for numeric sliders and spinners."
+                                },
+                                "advanced": {
+                                    "type": "boolean",
+                                    "default": false,
+                                    "description": "Hides setting behind the 'Show Advanced' toggle."
+                                },
+                                "extensions": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "string"
+                                    },
+                                    "description": "File extension filters for file pickers."
+                                },
+                                "options": {
+                                    "type": "array",
+                                    "description": "Dropdown selection options required when type = 'select'.",
+                                    "items": {
+                                        "type": "object",
+                                        "required": [
+                                            "value",
+                                            "label_key"
+                                        ],
+                                        "properties": {
+                                            "value": {
+                                                "type": "string",
+                                                "description": "The configuration value stored and returned by noctalia.getConfig()."
+                                            },
+                                            "label_key": {
+                                                "type": "string",
+                                                "description": "Translation key in translations/<lang>.json for the dropdown option."
+                                            }
+                                        }
+                                    }
+                                },
+                                "visible_when": {
+                                    "type": "object",
+                                    "required": [
+                                        "key",
+                                        "values"
+                                    ],
+                                    "description": "Conditional UI visibility rule based on another setting's value.",
+                                    "properties": {
+                                        "key": {
+                                            "type": "string",
+                                            "description": "Target setting key to evaluate."
+                                        },
+                                        "values": {
+                                            "type": "array",
+                                            "items": {
+                                                "type": "string"
+                                            },
+                                            "description": "Values that make this setting visible."
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "panel": {
+            "type": "array",
+            "description": "Pop-up UI surface entries opened via noctalia.togglePanel().",
+            "items": {
+                "type": "object",
+                "required": [
+                    "id",
+                    "entry"
+                ],
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "pattern": "^[a-zA-Z0-9_-]+$",
+                        "description": "Unique entry identifier within this plugin."
+                    },
+                    "entry": {
+                        "type": "string",
+                        "pattern": "\\.luau$",
+                        "description": "Relative path to the panel Luau script."
+                    },
+                    "width": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Default panel surface width in logical pixels."
+                    },
+                    "height": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Default panel surface height in logical pixels."
+                    },
+                    "placement": {
+                        "type": "string",
+                        "enum": [
+                            "floating",
+                            "anchored",
+                            "sidebar"
+                        ],
+                        "description": "Window positioning mode on screen."
+                    },
+                    "position": {
+                        "type": "string",
+                        "enum": [
+                            "center",
+                            "top",
+                            "bottom",
+                            "left",
+                            "right",
+                            "top_left",
+                            "top_right",
+                            "bottom_left",
+                            "bottom_right"
+                        ],
+                        "description": "Screen alignment anchor point."
+                    },
+                    "open_near_click": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "When true, opens adjacent to the invoking widget."
+                    },
+                    "keyboard_focus": {
+                        "type": "string",
+                        "enum": [
+                            "exclusive",
+                            "on_demand",
+                            "none"
+                        ],
+                        "description": "Keyboard focus grabbing mode for panel input handling."
+                    },
+                    "capture_keys": {
+                        "type": "array",
+                        "description": "List of key chords intercepted and dispatched to onKey (e.g. ['q', 'Escape', 'r']).",
+                        "items": {
+                            "type": "string",
+                            "examples": [
+                                "Escape",
+                                "Return",
+                                "Space",
+                                "Tab",
+                                "Backspace",
+                                "Delete",
+                                "Up",
+                                "Down",
+                                "Left",
+                                "Right",
+                                "q",
+                                "r",
+                                "slash"
+                            ]
+                        }
+                    },
+                    "setting": {
+                        "type": "array",
+                        "description": "Panel-scoped settings schema.",
+                        "items": {
+                            "type": "object",
+                            "required": [
+                                "key",
+                                "type",
+                                "label_key"
+                            ],
+                            "properties": {
+                                "key": {
+                                    "type": "string",
+                                    "pattern": "^[a-zA-Z0-9_-]+$",
+                                    "description": "Config key read back via noctalia.getConfig(key)."
+                                },
+                                "type": {
+                                    "type": "string",
+                                    "enum": [
+                                        "string",
+                                        "string_list",
+                                        "string_map",
+                                        "bool",
+                                        "int",
+                                        "double",
+                                        "select",
+                                        "file",
+                                        "folder",
+                                        "glyph",
+                                        "color"
+                                    ]
+                                },
+                                "label_key": {
+                                    "type": "string",
+                                    "description": "Translation key in translations/<lang>.json for the title label."
+                                },
+                                "description_key": {
+                                    "type": "string",
+                                    "description": "Translation key in translations/<lang>.json for description/tooltip."
+                                },
+                                "default": {},
+                                "min": {
+                                    "type": "number"
+                                },
+                                "max": {
+                                    "type": "number"
+                                },
+                                "step": {
+                                    "type": "number"
+                                },
+                                "advanced": {
+                                    "type": "boolean",
+                                    "default": false
+                                },
+                                "extensions": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "string"
+                                    }
+                                },
+                                "options": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "required": [
+                                            "value",
+                                            "label_key"
+                                        ],
+                                        "properties": {
+                                            "value": {
+                                                "type": "string"
+                                            },
+                                            "label_key": {
+                                                "type": "string"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "service": {
+            "type": "array",
+            "description": "Headless background service entries.",
+            "items": {
+                "type": "object",
+                "required": [
+                    "id",
+                    "entry"
+                ],
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "pattern": "^[a-zA-Z0-9_-]+$",
+                        "description": "Unique entry identifier within this plugin."
+                    },
+                    "entry": {
+                        "type": "string",
+                        "pattern": "\\.luau$",
+                        "description": "Relative path to the headless service Luau script."
+                    }
+                }
+            }
+        },
+        "shortcut": {
+            "type": "array",
+            "description": "Control Center quick-toggle tile entries.",
+            "items": {
+                "type": "object",
+                "required": [
+                    "id",
+                    "entry"
+                ],
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "pattern": "^[a-zA-Z0-9_-]+$",
+                        "description": "Unique entry identifier."
+                    },
+                    "entry": {
+                        "type": "string",
+                        "pattern": "\\.luau$",
+                        "description": "Relative path to the shortcut Luau script."
+                    }
+                }
+            }
+        },
+        "launcher_provider": {
+            "type": "array",
+            "description": "Application launcher search provider entries.",
+            "items": {
+                "type": "object",
+                "required": [
+                    "id",
+                    "entry"
+                ],
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "pattern": "^[a-zA-Z0-9_-]+$",
+                        "description": "Unique entry identifier."
+                    },
+                    "entry": {
+                        "type": "string",
+                        "pattern": "\\.luau$",
+                        "description": "Relative path to the launcher provider Luau script."
+                    },
+                    "prefix": {
+                        "type": "string",
+                        "description": "Activation prefix typed in the launcher (e.g. 'ex' for '/ex')."
+                    },
+                    "glyph": {
+                        "type": "string",
+                        "description": "Icon glyph rendered next to query matches."
+                    },
+                    "include_in_global_search": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "Whether results appear in un-prefixed launcher searches."
+                    }
+                }
+            }
+        },
+        "desktop_widget": {
+            "type": "array",
+            "description": "Persistent desktop wallpaper widget tiles.",
+            "items": {
+                "type": "object",
+                "required": [
+                    "id",
+                    "entry"
+                ],
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "pattern": "^[a-zA-Z0-9_-]+$",
+                        "description": "Unique entry identifier."
+                    },
+                    "entry": {
+                        "type": "string",
+                        "pattern": "\\.luau$",
+                        "description": "Relative path to the desktop widget Luau script."
+                    }
+                }
+            }
+        }
+    }
+}
