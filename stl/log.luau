@@ -90,21 +90,20 @@ local function emit(levelStr: LogLevel, tag: string, msg: string, ctx: { [string
 		return
 	end
 
-	local ts = getTimestamp()
 	local contextStr = serializeContext(ctx)
-	local formatted = string.format("[%s] [%s] [%s] %s%s", ts, levelStr :: string, tag, msg, contextStr)
 
-	-- Sink 1: Noctalia Host Console / stdout
+	-- Sink 1: Noctalia Host Console (Noctalia prefixes timestamp + [INF] [script-runtime] automatically)
 	if (noctalia :: any) ~= nil and (noctalia :: any).log ~= nil then
-		noctalia.log(formatted)
+		noctalia.log(string.format("[%s] %s%s", tag, msg, contextStr))
 	else
-		print(formatted)
+		local ts = getTimestamp()
+		print(string.format("[%s] [%s] [%s] %s%s", ts, levelStr :: string, tag, msg, contextStr))
 	end
 
 	-- Sink 2: Cross-VM In-Memory IPC Ring Buffer
 	if (noctalia :: any) ~= nil and (noctalia :: any).state ~= nil and (noctalia :: any).state.set ~= nil then
 		local record: LogRecord = {
-			timestamp = ts,
+			timestamp = getTimestamp(),
 			level = levelStr,
 			tag = tag,
 			message = msg,

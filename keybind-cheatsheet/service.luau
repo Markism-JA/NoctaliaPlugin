@@ -1,6 +1,7 @@
 --!strict
 -- Cache-first keybind data service for Mango, Hyprland, and Niri.
 
+local lifecycle = require("../stl/lifecycle")
 local stl = require("../stl/stl.luau")
 local config = stl.config
 local filesystem = stl.filesystem
@@ -1068,6 +1069,7 @@ finishRefresh = function(
 		return
 	end
 	refreshing = false
+
 	if err == nil then
 		lastGood = {
 			schema = CACHE_SCHEMA,
@@ -1080,12 +1082,10 @@ finishRefresh = function(
 		local writeOk, writeErr = filesystem.writePluginData(BINDINGS_CACHE_FILE, lastGood, false)
 		if not writeOk then
 			log.error("Failed to write cache file", { error = tostring(writeErr) })
-		else
-			log.info("Successfully wrote bindings-cache.json", { count = #result })
 		end
 
 		publish("ready", request, lastGood, "", false)
-		log.info("Keybindings parsed successfully", { count = #result, compositor = request.compositor })
+		log.info("Keybindings parsed & cached successfully", { count = #result, compositor = request.compositor })
 	else
 		publish("ready", request, lastGood, err, false)
 		log.error("Failed to parse keybindings", { error = err })
@@ -1190,29 +1190,46 @@ end
 -- =============================================================================
 
 if isInsideNoctalia then
-	lifecycle.service({
-		onEnable = function()
-			bootstrap()
-		end,
-		onConfigChanged = function()
-			local request = currentRequest()
-			refresh(request)
-		end,
-		onIpc = function(event: string, _payload: string)
-			if event == "refresh" then
-				refresh()
-			end
-		end,
-		onExit = function(_signal: number, _reason: string?)
-			refreshGeneration += 1
-			refreshing = false
-			refreshQueued = false
-		end,
-	})
+	lifecycle.service(
+		getfenv(),
+		{
+			onEnable = function()
+				bootstrap()
+			end,
+			onConfigChanged = function()
+				local request = currentRequest()
+				refresh(request)
+			end,
+			onIpc = function(event: string, payload: string)
+				if event == "refresh" or event == "reload" then
+					refresh()
+				end
+			end,
+			onExit = function(_signal, _reason)
+				refreshGeneration += 1
+				refreshing = false
+				refreshQueued = false
+			end,
+		} :: lifecycle.ServiceLifecycle
+	)
 
 	noctalia.state.watch(REFRESH_REQUEST_KEY, function(_request: any)
 		refresh()
 	end)
+
+	bootstrap()
 end
+
+-- Diagnostic check
+local env: { [string]: any } = if typeof(getfenv) == "function" then getfenv() :: any else {}
+
+noctalia.log(
+	string.format(
+		"[DIAG-BIND] onIpc in env: %s | onEnable in env: %s | onIpc in _G: %s",
+		tostring(typeof(env.onIpc) == "function"),
+		tostring(typeof(env.onEnable) == "function"),
+		tostring(typeof((_G :: any).onIpc) == "function")
+	)
+)
 
 return service
