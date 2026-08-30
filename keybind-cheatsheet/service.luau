@@ -9,7 +9,6 @@ local logger = stl.log
 local log = stl.log.scope("KeybindService")
 local proc = stl.proc
 local state = stl.state
-local test = stl.test
 
 local service = {}
 
@@ -121,6 +120,9 @@ local MODIFIER_ALIASES: { [string]: string } = {
 	CONTROL = "CTRL",
 	MOD1 = "ALT",
 }
+
+-- Optional JSON decode override for test harnesses
+local customJsonDecoder: JsonDecodeFn? = nil
 
 -- =============================================================================
 -- Pure Utility & Parser Methods (Exported for Testing)
@@ -745,13 +747,8 @@ end
 type JsonDecodeFn = (string) -> (any, string?)
 
 local function resolveJsonDecoder(): JsonDecodeFn?
-	local hostTable = test.host :: any
-	if
-		typeof(hostTable) == "table"
-		and typeof(hostTable.json) == "table"
-		and typeof(hostTable.json.decode) == "function"
-	then
-		return hostTable.json.decode :: JsonDecodeFn
+	if customJsonDecoder ~= nil then
+		return customJsonDecoder
 	end
 
 	local noctaliaHost = noctalia :: any

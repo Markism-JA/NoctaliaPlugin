@@ -3,8 +3,6 @@
 ---
 --- Provides safe asynchronous execution, detached process spawning, stream management,
 --- path caching, and host fallback for both live shell runtimes and CLI test harnesses.
-local test = require("./test.luau")
-
 local proc = {}
 
 -- =============================================================================
@@ -37,6 +35,13 @@ export type ProcessResult = {
 --- Standard completion callback for asynchronous subprocess execution.
 export type ExecCallback = (err: string?, stdout: string, exitCode: number) -> ()
 
+--- Host interface definition required by proc.
+export type ProcHost = {
+	runAsync: ((cmdOrArgv: string | { string }, cb: (res: ProcessResult) -> ()) -> boolean)?,
+	runStream: ((cmd: string, onLine: (line: string) -> ()) -> boolean)?,
+	commandExists: ((name: string) -> boolean)?,
+}
+
 -- =============================================================================
 -- Internal State & Caching
 -- =============================================================================
@@ -47,32 +52,19 @@ local DEFAULT_OPTS: ExecOptions = { trimOutput = true }
 --- Memoization cache for `commandExists` lookups across poll cycles.
 local PATH_CACHE: { [string]: boolean } = {}
 
+--- Optional mock host override injected during tests.
+local injectedHost: ProcHost? = nil
+
 --- Performs an allocation-minimized, single-pass whitespace trim on strings.
 local function fastTrim(str: string): string
 	local s = string.match(str, "^%s*(.-)%s*$")
 	return s or ""
 end
 
---- Resolves the effective subprocess host bridge, prioritizing active test mocks.
-local function getRunner(): any
-	if test.host and (test.host :: any).runAsync ~= nil then
-		return test.host
-	end
-	return noctalia
-end
-
---- Resolves the effective command existence checker, prioritizing active test mocks.
-local function getChecker(): any
-	if test.host and (test.host :: any).commandExists ~= nil then
-		return test.host
-	end
-	return noctalia
-end
-
---- Resolves the effective stream runner, prioritizing active test mocks.
-local function getStreamRunner(): any
-	if test.host and (test.host :: any).runStream ~= nil then
-		return test.host
+--- Resolves the effective subprocess host bridge.
+local function getHost(): any
+	if injectedHost ~= nil then
+		return injectedHost
 	end
 	return noctalia
 end
@@ -103,7 +95,7 @@ end
 --- @return boolean True if the execution request was accepted and queued by the host.
 function proc.exec(cmdOrArgv: string | { string }, cb: ExecCallback, options: ExecOptions?): boolean
 	local opts = options or DEFAULT_OPTS
-	local runner: any = getRunner()
+	local runner: any = getHost()
 
 	if runner == nil or runner.runAsync == nil then
 		cb("Host process runner unavailable", "", -1)
@@ -170,7 +162,7 @@ end
 --- @param cmdOrArgv string | { string } Shell command string or argument array.
 --- @return boolean True if the launch request was accepted by the host queue.
 function proc.spawn(cmdOrArgv: string | { string }): boolean
-	local runner: any = getRunner()
+	local runner: any = getHost()
 	if runner == nil or runner.runAsync == nil then
 		return false
 	end
@@ -192,7 +184,7 @@ end
 --- @param onLine (line: string) -> () Callback invoked per standard output line.
 --- @return boolean True if the stream was accepted and started.
 function proc.stream(cmd: string, onLine: (line: string) -> ()): boolean
-	local runner: any = getStreamRunner()
+	local runner: any = getHost()
 	if runner == nil or runner.runStream == nil then
 		return false
 	end
@@ -219,7 +211,7 @@ function proc.exists(name: string): boolean
 		return cached
 	end
 
-	local checker: any = getChecker()
+	local checker: any = getHost()
 	if checker == nil or checker.commandExists == nil then
 		return false
 	end

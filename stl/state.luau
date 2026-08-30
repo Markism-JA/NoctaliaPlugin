@@ -3,8 +3,6 @@
 
 --- Provides type-safe shared state channels between isolated Luau VMs
 --- (Services, Panels, Bar Widgets) with fallback defaults and CLI test support.
-local test = require("./test.luau")
-
 local state = {}
 
 -- =============================================================================
@@ -21,14 +19,28 @@ export type StateChannel<T> = {
 	watch: (fn: (val: T) -> ()) -> (),
 }
 
+--- Host interface definition required by state.
+export type StateBridge = {
+	get: ((key: string) -> any)?,
+	set: ((key: string, val: any) -> ())?,
+	watch: ((key: string, fn: (newVal: any) -> ()) -> ())?,
+}
+
+export type StateHost = {
+	state: StateBridge?,
+}
+
 -- =============================================================================
--- Internal Helpers
+-- Internal State & Helpers
 -- =============================================================================
 
---- Resolves the effective state host bridge, prioritizing active test mocks.
-local function getStateBridge(): any
-	if test.host and (test.host :: any).state ~= nil then
-		return (test.host :: any).state
+--- Optional mock host override injected during tests.
+local injectedHost: StateHost? = nil
+
+--- Resolves the effective state host bridge.
+local function getStateBridge(): StateBridge?
+	if injectedHost ~= nil and injectedHost.state ~= nil then
+		return injectedHost.state
 	end
 	if (noctalia :: any) ~= nil and (noctalia :: any).state ~= nil then
 		return (noctalia :: any).state
