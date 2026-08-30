@@ -1,13 +1,19 @@
 --!strict
 --- Declarative lifecycle binding utility for Noctalia plugin entrypoints.
---- Bridges typed contracts to the active Luau execution environment.
+---
+--- Bridges typed callback contracts to the active Luau execution environment
+--- (Services, Panels, and Bar Widgets) with safe global binding and test unbinding.
 local lifecycle = {}
+
+-- =============================================================================
+-- Types & Contracts
+-- =============================================================================
 
 --- Valid termination reasons delivered to `onExit`.
 export type ExitReason = "disable" | "uninstall" | "reload" | "shutdown"
 
 -- =============================================================================
--- Discrete Callback Signatures (Enables direct LSP type hints and docstring hovers)
+-- Discrete Callback Signatures
 -- =============================================================================
 
 --- Periodic update callback invoked based on `noctalia.setUpdateInterval`.
@@ -20,27 +26,44 @@ export type ServiceEnableCallback = () -> ()
 export type ConfigChangedCallback = () -> ()
 
 --- Called when an IPC event message is received by this entry.
+---
+--- @param event string Event identifier or action name.
+--- @param payload string Raw serialized message payload.
 export type IpcCallback = (event: string, payload: string) -> ()
 
 --- Called when the service or plugin surface is terminating.
+---
+--- @param signal number Process or OS termination signal.
+--- @param reason ExitReason? Structured exit reason string.
 export type ExitCallback = (signal: number, reason: ExitReason?) -> ()
 
---- Called when a panel UI view is opened. `context` contains optional payload from `panel-open`.
+--- Called when a panel UI view is opened.
+---
+--- @param context string? Optional payload string passed via `panel-open`.
 export type PanelOpenCallback = (context: string?) -> ()
 
 --- Called when a panel UI view is closed.
 export type PanelCloseCallback = () -> ()
 
 --- Called on keyboard events while the panel has input focus for chords declared in `capture_keys`.
+---
+--- @param chord string Key combination or chord string (e.g. "Escape", "Control+f").
+--- @param pressed boolean True if keydown, false if keyup.
 export type PanelKeyCallback = (chord: string, pressed: boolean) -> ()
 
 --- Called on every display frame when `panel.setNeedsFrameTick(true)` is active.
+---
+--- @param deltaMs number Milliseconds elapsed since the previous display frame.
 export type PanelFrameTickCallback = (deltaMs: number) -> ()
 
---- Called when a widget capsule is clicked with the primary mouse button.
+--- Called when a widget capsule is clicked with mouse buttons.
 export type WidgetClickCallback = () -> ()
 
 --- Called on mouse scroll wheel activity over a widget capsule.
+---
+--- @param axis "vertical" | "horizontal" Scroll direction axis.
+--- @param steps number Number of scroll increments.
+--- @param startsGesture boolean True if this event initiated a new touchpad/wheel gesture.
 export type WidgetScrollCallback = (axis: "vertical" | "horizontal", steps: number, startsGesture: boolean) -> ()
 
 -- =============================================================================
@@ -103,34 +126,134 @@ export type WidgetLifecycle = {
 
 --- Internal binder that reflects hooks directly into the target chunk environment table.
 local function bind(env: { [string]: any }, hooks: { [string]: any })
+	if env == nil then
+		return
+	end
+
+	local gTable = _G :: any
+
 	for name, fn in pairs(hooks) do
 		if fn ~= nil then
 			env[name] = fn
-			if (rawget :: any) ~= nil and (rawset :: any) ~= nil then
-				rawset(_G, name, fn)
-			else
-				_G[name] = fn
+			if gTable ~= nil then
+				if (rawset :: any) ~= nil then
+					(rawset :: any)(gTable, name, fn)
+				else
+					gTable[name] = fn
+				end
 			end
 		end
 	end
 end
 
+--- Internal unbinder that clears registered hooks from environment tables.
+local function unbindHooks(env: { [string]: any }?, hookNames: { string })
+	if env == nil then
+		return
+	end
+
+	local gTable = _G :: any
+
+	for _, name in ipairs(hookNames) do
+		env[name] = nil
+		if gTable ~= nil then
+			if (rawset :: any) ~= nil then
+				(rawset :: any)(gTable, name, nil)
+			else
+				gTable[name] = nil
+			end
+		end
+	end
+end
+
+-- =============================================================================
+-- Public API
+-- =============================================================================
+
 --- Registers typed background service lifecycle hooks into the target chunk environment.
---- Pass `getfenv()` as the first parameter.
+---
+--- ### Example:
+--- ```luau
+--- lifecycle.service(getfenv(), {
+---     onEnable = function()
+---         bootstrap()
+---     end,
+---     onIpc = function(event, payload)
+---         if event == "reload" then refresh() end
+---     end,
+---     onExit = function(_signal, _reason)
+---         cleanup()
+---     end,
+--- })
+--- ```
+---
+--- @param env { [string]: any } Target chunk environment table (typically `getfenv()`).
+--- @param hooks ServiceLifecycle Table of service callback implementations.
 function lifecycle.service(env: { [string]: any }, hooks: ServiceLifecycle)
 	bind(env, hooks :: { [string]: any })
 end
 
 --- Registers typed panel UI surface lifecycle hooks into the target chunk environment.
---- Pass `getfenv()` as the first parameter.
+---
+--- ### Example:
+--- ```luau
+--- lifecycle.panel(getfenv(), {
+---     onOpen = function(context)
+---         view.reset()
+---     end,
+---     onKey = function(chord, pressed)
+---         if chord == "Escape" and pressed then panel.close() end
+---     end,
+--- })
+--- ```
+---
+--- @param env { [string]: any } Target chunk environment table (typically `getfenv()`).
+--- @param hooks PanelLifecycle Table of panel callback implementations.
 function lifecycle.panel(env: { [string]: any }, hooks: PanelLifecycle)
 	bind(env, hooks :: { [string]: any })
 end
 
 --- Registers typed bar widget lifecycle hooks into the target chunk environment.
---- Pass `getfenv()` as the first parameter.
+---
+--- ### Example:
+--- ```luau
+--- lifecycle.widget(getfenv(), {
+---     onClick = function()
+---         proc.spawn("noctalia msg panel-toggle launcher")
+---     end,
+---     update = function()
+---         renderCapsule()
+---     end,
+--- })
+--- ```
+---
+--- @param env { [string]: any } Target chunk environment table (typically `getfenv()`).
+--- @param hooks WidgetLifecycle Table of widget callback implementations.
 function lifecycle.widget(env: { [string]: any }, hooks: WidgetLifecycle)
 	bind(env, hooks :: { [string]: any })
+end
+
+--- Clears all standard lifecycle hook symbols from the given environment and `_G`.
+---
+--- Useful during unit test teardown (`afterEach`) to prevent hook leakage across tests.
+---
+--- @param env { [string]: any } Target chunk environment table.
+function lifecycle.unbind(env: { [string]: any })
+	unbindHooks(env, {
+		"update",
+		"onEnable",
+		"onConfigChanged",
+		"onIpc",
+		"onExit",
+		"onOpen",
+		"onClose",
+		"onKey",
+		"onFrameTick",
+		"onClick",
+		"onRightClick",
+		"onMiddleClick",
+		"onScroll",
+	})
 end
 
 return lifecycle
