@@ -1,7 +1,8 @@
 --!strict
---- Subprocess execution and stream handling helpers for Noctalia.
---- Provides safe asynchronous execution, detached process spawning, persistent stream
---- management, and host environment fallback for both live shell runtimes and CLI test harnesses.
+--- Subprocess execution and persistent stream handling helpers for Noctalia.
+---
+--- Provides safe asynchronous execution, detached process spawning, stream management,
+--- path caching, and host fallback for both live shell runtimes and CLI test harnesses.
 local test = require("./test.luau")
 
 local proc = {}
@@ -10,164 +11,229 @@ local proc = {}
 -- Types & Contracts
 -- =============================================================================
 
+--- Optional configuration flags for subprocess execution.
 export type ExecOptions = {
-	--- When true, automatically trims leading and trailing whitespace from stdout and stderr.
+	--- When true, automatically strips leading and trailing whitespace from stdout and stderr.
+	--- Defaults to true.
 	trimOutput: boolean?,
 }
 
+--- Raw process outcome emitted by the underlying host runtime.
 export type ProcessResult = {
+	--- Process exit status code (0 indicates success).
 	exitCode: number,
+	--- Standard output stream captured from the process.
 	stdout: string,
+	--- Standard error stream captured from the process.
 	stderr: string,
+	--- True if the execution duration exceeded the host timeout threshold.
 	timedOut: boolean,
+	--- True if stdout exceeded buffer limits and was truncated by the host.
 	stdoutTruncated: boolean?,
+	--- True if stderr exceeded buffer limits and was truncated by the host.
 	stderrTruncated: boolean?,
 }
 
 --- Standard completion callback for asynchronous subprocess execution.
---- @param err string? Non-nil if the process failed to launch, timed out, or returned a non-zero exit code.
---- @param stdout string The captured standard output of the process.
---- @param exitCode number The numeric status code returned by the process (-1 for launch/runner errors).
 export type ExecCallback = (err: string?, stdout: string, exitCode: number) -> ()
 
 -- =============================================================================
--- Internal Helpers
+-- Internal State & Caching
 -- =============================================================================
 
---- Resolves the effective subprocess host bridge, prioritizing active test mocks over the global runtime.
-local function resolveRunner(): any
-	if test.host and test.host.runAsync ~= nil then
-		return test.host
-	end
-	if (noctalia :: any) ~= nil and (noctalia :: any).runAsync ~= nil then
-		return noctalia
-	end
-	return nil
+--- Static default options table.
+local DEFAULT_OPTS: ExecOptions = { trimOutput = true }
+
+--- Memoization cache for `commandExists` lookups across poll cycles.
+local PATH_CACHE: { [string]: boolean } = {}
+
+--- Performs an allocation-minimized, single-pass whitespace trim on strings.
+local function fastTrim(str: string): string
+	local s = string.match(str, "^%s*(.-)%s*$")
+	return s or ""
 end
 
---- Resolves the effective command existence checker.
-local function resolveChecker(): any
-	if test.host and test.host.commandExists ~= nil then
+--- Resolves the effective subprocess host bridge, prioritizing active test mocks.
+local function getRunner(): any
+	if test.host and (test.host :: any).runAsync ~= nil then
 		return test.host
 	end
-	if (noctalia :: any) ~= nil and (noctalia :: any).commandExists ~= nil then
-		return noctalia
-	end
-	return nil
+	return noctalia
 end
 
---- Resolves the effective stream runner.
-local function resolveStreamRunner(): any
-	if test.host and test.host.runStream ~= nil then
+--- Resolves the effective command existence checker, prioritizing active test mocks.
+local function getChecker(): any
+	if test.host and (test.host :: any).commandExists ~= nil then
 		return test.host
 	end
-	if (noctalia :: any) ~= nil and (noctalia :: any).runStream ~= nil then
-		return noctalia
-	end
-	return nil
+	return noctalia
 end
 
-local function safeTrim(str: string?): string
-	if not str or str == "" then
-		return ""
+--- Resolves the effective stream runner, prioritizing active test mocks.
+local function getStreamRunner(): any
+	if test.host and (test.host :: any).runStream ~= nil then
+		return test.host
 	end
-	local from = string.match(str, "^%s*()")
-	if not from then
-		return ""
-	end
-	return if from > #str then "" else (string.match(str, ".*%S", from) or "")
+	return noctalia
 end
 
 -- =============================================================================
--- Public Interface
+-- Public API
 -- =============================================================================
 
---- Runs a command or argument array asynchronously and captures its output.
---- If the host rejects the task queue or the runner is unavailable, the callback is
---- invoked immediately with an error rather than hanging.
+--- Runs a command string or argv table asynchronously and captures its output.
 ---
---- @param cmdOrArgv string | { string } Shell command string or argv table.
+--- If the host runner is unavailable or rejects the task queue (exhaustion limit),
+--- the callback is invoked synchronously with an error rather than hanging.
+---
+--- ### Example:
+--- ```luau
+--- proc.exec({ "hyprctl", "activeworkspace", "-j" }, function(err, stdout, code)
+---     if err then
+---         log.error("Failed to query workspace", { err = err, code = code })
+---         return
+---     end
+---     local ws = noctalia.json.decode(stdout)
+--- end)
+--- ```
+---
+--- @param cmdOrArgv string | { string } Shell command string or argument array.
 --- @param cb ExecCallback Callback invoked upon process completion or immediate failure.
 --- @param options ExecOptions? Optional execution controls (e.g. `trimOutput`).
---- @return boolean True if the execution request was queued by the host.
+--- @return boolean True if the execution request was accepted and queued by the host.
 function proc.exec(cmdOrArgv: string | { string }, cb: ExecCallback, options: ExecOptions?): boolean
-	local opts = options or { trimOutput = true }
-	local runner = resolveRunner()
+	local opts = options or DEFAULT_OPTS
+	local runner: any = getRunner()
 
-	if runner == nil then
-		cb("Host process runner unavailable (running outside Noctalia runtime)", "", -1)
+	if runner == nil or runner.runAsync == nil then
+		cb("Host process runner unavailable", "", -1)
 		return false
 	end
 
-	local accepted = runner.runAsync(cmdOrArgv, function(res: ProcessResult)
+	local didComplete = false
+
+	local accepted = (runner.runAsync :: any)(cmdOrArgv, function(res: ProcessResult)
+		if didComplete then
+			return
+		end
+		didComplete = true
+
 		if res.timedOut then
 			cb("Process timed out", "", res.exitCode)
 			return
 		end
 
+		local shouldTrim = opts.trimOutput == true
+		local stdout = res.stdout or ""
+
 		if res.exitCode ~= 0 then
-			local errMsg = if res.stderr and res.stderr ~= ""
+			local err = if res.stderr and res.stderr ~= ""
 				then res.stderr
 				else string.format("Process exited with code %d", res.exitCode)
 
-			if opts.trimOutput then
-				errMsg = safeTrim(errMsg)
+			if shouldTrim then
+				err = fastTrim(err)
+				stdout = fastTrim(stdout)
 			end
-			cb(errMsg, res.stdout or "", res.exitCode)
+
+			cb(err, stdout, res.exitCode)
 			return
 		end
 
-		local stdout = res.stdout or ""
-		if opts.trimOutput then
-			stdout = safeTrim(stdout)
+		if shouldTrim and stdout ~= "" then
+			stdout = fastTrim(stdout)
 		end
 
 		cb(nil, stdout, res.exitCode)
 	end)
 
 	if not accepted then
-		cb("Failed to queue subprocess (host task queue full or invalid command)", "", -1)
+		if not didComplete then
+			didComplete = true
+			cb("Failed to queue subprocess (host task queue full or invalid command)", "", -1)
+		end
+		return false
 	end
 
-	return accepted
+	return true
 end
 
 --- Starts a detached process without output capture (fire-and-forget).
 ---
---- @param cmdOrArgv string | { string } Shell command string or argv table.
---- @return boolean True if the process successfully launched.
+--- Useful for triggering external applications or dispatching CLI IPC messages.
+---
+--- ### Example:
+--- ```luau
+--- proc.spawn("noctalia msg panel-toggle launcher")
+--- ```
+---
+--- @param cmdOrArgv string | { string } Shell command string or argument array.
+--- @return boolean True if the launch request was accepted by the host queue.
 function proc.spawn(cmdOrArgv: string | { string }): boolean
-	local runner = resolveRunner()
-	if runner == nil then
+	local runner: any = getRunner()
+	if runner == nil or runner.runAsync == nil then
 		return false
 	end
-	return runner.runAsync(cmdOrArgv)
+	return (runner.runAsync :: any)(cmdOrArgv) == true
 end
 
---- Starts a long-lived stream process and calls `onLine` for every emitted stdout line.
---- The stream is automatically terminated by Noctalia when the plugin runtime unloads.
+--- Starts a long-lived streaming process and invokes `onLine` for every line emitted to stdout.
 ---
---- @param cmd string Shell command to run in streaming mode.
---- @param onLine (line: string) -> () Callback invoked per output line (carriage returns trimmed).
---- @return boolean True if the stream was accepted and initiated.
+--- The process stream is automatically terminated by Noctalia when the host unloads the plugin entry.
+---
+--- ### Example:
+--- ```luau
+--- proc.stream("playerctl metadata --follow", function(line)
+---     log.debug("Track updated", { metadata = line })
+--- end)
+--- ```
+---
+--- @param cmd string Shell command string to execute in streaming mode.
+--- @param onLine (line: string) -> () Callback invoked per standard output line.
+--- @return boolean True if the stream was accepted and started.
 function proc.stream(cmd: string, onLine: (line: string) -> ()): boolean
-	local runner = resolveStreamRunner()
-	if runner == nil then
+	local runner: any = getStreamRunner()
+	if runner == nil or runner.runStream == nil then
 		return false
 	end
-	return runner.runStream(cmd, onLine)
+	return (runner.runStream :: any)(cmd, onLine) == true
 end
 
---- Checks if an executable is available on the system PATH.
+--- Checks whether a binary executable exists on the system `$PATH`.
 ---
---- @param name string Binary executable name to check (e.g. "hyprctl").
---- @return boolean True if the command is found.
+--- Results are memoized in memory to eliminate repeated `$PATH` lookups during high-frequency
+--- polling intervals (e.g. 400ms timers).
+---
+--- ### Example:
+--- ```luau
+--- if proc.exists("hyprctl") then
+---     -- Safe to query hyprctl
+--- end
+--- ```
+---
+--- @param name string Binary executable name to check (e.g. "hyprctl", "wpctl").
+--- @return boolean True if the executable binary is present and reachable.
 function proc.exists(name: string): boolean
-	local checker = resolveChecker()
-	if checker == nil then
+	local cached = PATH_CACHE[name]
+	if cached ~= nil then
+		return cached
+	end
+
+	local checker: any = getChecker()
+	if checker == nil or checker.commandExists == nil then
 		return false
 	end
-	return checker.commandExists(name)
+
+	local exists = (checker.commandExists :: any)(name) == true
+	PATH_CACHE[name] = exists
+	return exists
+end
+
+--- Clears the memoized binary path cache.
+---
+--- Call this during unit tests or runtime reloads if `$PATH` binaries may have changed.
+function proc.clearCache()
+	table.clear(PATH_CACHE)
 end
 
 return proc
