@@ -29,7 +29,7 @@ entry = "service.luau"
 
 [[panel]]
 id = "layouts"
-entry = "layout_panel.luau"
+entry = "panel.luau"
 width = 440
 height = 360
 placement = "floating"
