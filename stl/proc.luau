@@ -56,10 +56,24 @@ local PATH_CACHE: { [string]: boolean } = {}
 --- Optional mock host override injected during tests.
 local injectedHost: ProcHost? = nil
 
---- Performs an allocation-minimized, single-pass whitespace trim on strings.
+--- Performs an allocation-minimized, $O(N)$ two-pointer trim without regex backtracking.
 local function fastTrim(str: string): string
-	local s = string.match(str, "^%s*(.-)%s*$")
-	return s or ""
+	local len = #str
+	if len == 0 then
+		return ""
+	end
+
+	local first = string.find(str, "%S")
+	if not first then
+		return ""
+	end
+
+	local last = len
+	while last >= first and string.find(string.sub(str, last, last), "%s") do
+		last -= 1
+	end
+
+	return string.sub(str, first, last)
 end
 
 --- Resolves the effective host environment bridge, prioritizing active test mocks

@@ -1280,3 +1280,9 @@ stl.lifecycle.panel(getfenv(), {
 		end
 	end,
 })
+
+render()
+
+return {
+	render = render,
+}
