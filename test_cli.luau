@@ -1,18 +1,5 @@
 --!strict
 --- Hermetic Test Runner & CLI Tool for Noctalia Plugin Development.
----
---- Supports:
----   * Extension-preserving relative module loading (Noctalia engine standard)
----   * Automatic recursive spec discovery (`*_spec.luau`)
----   * Filtering, quiet output, fail-fast execution, and CI exit codes
----
---- Usage Examples:
----   lune run test_cli                                 (Run all specs in repository)
----   lune run test_cli testing/specs                   (Run all specs under testing/specs)
----   lune run test_cli plugins/keybind-cheatsheet      (Run plugin-specific tests)
----   lune run test_cli --quiet                         (Suppress debug/error logs)
----   lune run test_cli --filter "Matrix"               (Run matching test/suite names)
----   lune run test_cli --fail-fast                     (Stop on first failure)
 
 local fs = require("@lune/fs")
 local luau = require("@lune/luau")
@@ -20,6 +7,22 @@ local process = require("@lune/process")
 
 local nativeRequire = require
 local moduleCache: { [string]: any } = {}
+
+-- Export cache clearing helper for test isolation
+local function clearModuleCache(prefix: string?)
+	if prefix == nil then
+		table.clear(moduleCache)
+	else
+		for path in pairs(moduleCache) do
+			if string.find(path, prefix, 1, true) then
+				moduleCache[path] = nil
+			end
+		end
+	end
+end
+
+-- Expose cache invalidator globally for specs needing fresh evaluation
+(_G :: any).__clearModuleCache = clearModuleCache
 
 -- =============================================================================
 -- CLI Option Flags & Parsing
@@ -81,12 +84,6 @@ Options:
   -q, --quiet           Silence non-test logging (stdout error traces).
   -x, --fail-fast       Abort execution on the first encountered test failure.
   -h, --help            Show this help dialog.
-
-Examples:
-  lune run test_cli
-  lune run test_cli testing/specs/compat_matrix_spec
-  lune run test_cli plugins/keybind-cheatsheet/tests -q
-  lune run test_cli --filter="matrix" --fail-fast
 ]])
 end
 
@@ -167,21 +164,23 @@ local function virtualRequire(currentDir: string, importPath: string, runnerConf
 	local bytecode = luau.compile(source)
 
 	local nextDir = getDirName(targetPath)
-	local moduleEnv = table.clone(getfenv())
+
+	local moduleEnv: { [string]: any } = table.clone(getfenv())
+	for k, v in pairs(_G) do
+		moduleEnv[k] = v
+	end
 
 	moduleEnv.require = function(nextPath: string)
 		return virtualRequire(nextDir, nextPath, runnerConfig)
 	end
 
-	-- Mute stdout error prints when running with -q / --quiet
 	if runnerConfig.quiet then
-		local rawPrint = print
 		moduleEnv.print = function(...: any)
 			local firstArg = tostring(select(1, ...))
 			if string.find(firstArg, "%[STL ERROR%]") or string.find(firstArg, "%[ERROR%]") then
 				return
 			end
-			rawPrint(...)
+			print(...)
 		end
 	end
 
@@ -207,15 +206,16 @@ if config.help then
 	process.exit(0)
 end
 
--- Resolve all targeted spec paths
 local specFiles: { string } = {}
 
 if #config.targets == 0 then
-	-- Default repository discovery
 	for _, spec in ipairs(discoverSpecs("testing/specs")) do
 		table.insert(specFiles, spec)
 	end
 	for _, spec in ipairs(discoverSpecs("plugins")) do
+		table.insert(specFiles, spec)
+	end
+	for _, spec in ipairs(discoverSpecs("keybind-cheatsheet/tests")) do
 		table.insert(specFiles, spec)
 	end
 else
@@ -243,18 +243,42 @@ if #specFiles == 0 then
 	process.exit(1)
 end
 
--- Bootstrap global harness & testing framework
-local testing = virtualRequire(".", "testing/testing.luau", config)
-testing.bootstrap()
+local testing: any = virtualRequire(".", "testing/testing.luau", config)
 
--- Load all discovered spec files into the test registry
+local bootstrapFn: any = testing.bootstrap
+if typeof(bootstrapFn) == "function" then
+	(bootstrapFn :: () -> ())()
+else
+	local createHostFn: any = testing.createMockHost
+	if typeof(createHostFn) == "function" then
+		local host = (createHostFn :: () -> any)()
+		local injectHostFn: any = testing.injectHost
+		if typeof(injectHostFn) == "function" then
+			(injectHostFn :: (any) -> ())(host)
+		end
+	end
+end
+
 for _, specPath in ipairs(specFiles) do
 	virtualRequire(".", specPath, config)
 end
 
--- Execute suites
-local _passed, failed = testing.run()
-testing.teardown()
+local runFn: any = testing.run
+if typeof(runFn) ~= "function" and typeof(testing.test) == "table" then
+	runFn = testing.test.run
+end
+
+if typeof(runFn) ~= "function" then
+	print("[ERROR] Could not find test runner function 'test.run()' in testing.luau")
+	process.exit(1)
+end
+
+local _passed: number, failed: number = (runFn :: () -> (number, number))()
+
+local teardownFn: any = testing.teardown
+if typeof(teardownFn) == "function" then
+	(teardownFn :: () -> ())()
+end
 
 if failed > 0 then
 	process.exit(1)
