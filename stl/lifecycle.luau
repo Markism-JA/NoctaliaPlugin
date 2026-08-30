@@ -121,20 +121,44 @@ export type WidgetLifecycle = {
 }
 
 -- =============================================================================
--- Environment Reflection Binder
+-- Internal State & Helpers
 -- =============================================================================
 
---- Internal binder that reflects hooks directly into the target chunk environment table.
-local function bind(env: { [string]: any }, hooks: { [string]: any })
-	if env == nil then
-		return
-	end
+--- Active mock host override injected during unit tests.
+local injectedHost: any = nil
 
+--- Tracks active registered handler functions for inspection in tests.
+local activeHandlers: { [string]: any } = {}
+
+local ALL_HOOK_SYMBOLS: { string } = {
+	"update",
+	"onEnable",
+	"onConfigChanged",
+	"onIpc",
+	"onExit",
+	"onOpen",
+	"onClose",
+	"onKey",
+	"onFrameTick",
+	"onClick",
+	"onRightClick",
+	"onMiddleClick",
+	"onScroll",
+}
+
+--- Internal binder that reflects hooks directly into the target chunk environment table.
+local function bind(env: { [string]: any }?, hooks: { [string]: any })
+	local targetEnv = env or (getfenv() :: any)
 	local gTable = _G :: any
 
 	for name, fn in pairs(hooks) do
 		if fn ~= nil then
-			env[name] = fn
+			activeHandlers[name] = fn
+
+			if targetEnv ~= nil then
+				targetEnv[name] = fn
+			end
+
 			if gTable ~= nil then
 				if (rawset :: any) ~= nil then
 					(rawset :: any)(gTable, name, fn)
@@ -148,14 +172,16 @@ end
 
 --- Internal unbinder that clears registered hooks from environment tables.
 local function unbindHooks(env: { [string]: any }?, hookNames: { string })
-	if env == nil then
-		return
-	end
-
+	local targetEnv = env or (getfenv() :: any)
 	local gTable = _G :: any
 
 	for _, name in ipairs(hookNames) do
-		env[name] = nil
+		activeHandlers[name] = nil
+
+		if targetEnv ~= nil then
+			targetEnv[name] = nil
+		end
+
 		if gTable ~= nil then
 			if (rawset :: any) ~= nil then
 				(rawset :: any)(gTable, name, nil)
@@ -187,9 +213,9 @@ end
 --- })
 --- ```
 ---
---- @param env { [string]: any } Target chunk environment table (typically `getfenv()`).
+--- @param env { [string]: any }? Target chunk environment table (defaults to `getfenv()`).
 --- @param hooks ServiceLifecycle Table of service callback implementations.
-function lifecycle.service(env: { [string]: any }, hooks: ServiceLifecycle)
+function lifecycle.service(env: { [string]: any }?, hooks: ServiceLifecycle)
 	bind(env, hooks :: { [string]: any })
 end
 
@@ -207,9 +233,9 @@ end
 --- })
 --- ```
 ---
---- @param env { [string]: any } Target chunk environment table (typically `getfenv()`).
+--- @param env { [string]: any }? Target chunk environment table (defaults to `getfenv()`).
 --- @param hooks PanelLifecycle Table of panel callback implementations.
-function lifecycle.panel(env: { [string]: any }, hooks: PanelLifecycle)
+function lifecycle.panel(env: { [string]: any }?, hooks: PanelLifecycle)
 	bind(env, hooks :: { [string]: any })
 end
 
@@ -227,9 +253,9 @@ end
 --- })
 --- ```
 ---
---- @param env { [string]: any } Target chunk environment table (typically `getfenv()`).
+--- @param env { [string]: any }? Target chunk environment table (defaults to `getfenv()`).
 --- @param hooks WidgetLifecycle Table of widget callback implementations.
-function lifecycle.widget(env: { [string]: any }, hooks: WidgetLifecycle)
+function lifecycle.widget(env: { [string]: any }?, hooks: WidgetLifecycle)
 	bind(env, hooks :: { [string]: any })
 end
 
@@ -237,23 +263,28 @@ end
 ---
 --- Useful during unit test teardown (`afterEach`) to prevent hook leakage across tests.
 ---
---- @param env { [string]: any } Target chunk environment table.
-function lifecycle.unbind(env: { [string]: any })
-	unbindHooks(env, {
-		"update",
-		"onEnable",
-		"onConfigChanged",
-		"onIpc",
-		"onExit",
-		"onOpen",
-		"onClose",
-		"onKey",
-		"onFrameTick",
-		"onClick",
-		"onRightClick",
-		"onMiddleClick",
-		"onScroll",
-	})
+--- @param env { [string]: any }? Target chunk environment table (defaults to `getfenv()`).
+function lifecycle.unbind(env: { [string]: any }?)
+	unbindHooks(env, ALL_HOOK_SYMBOLS)
+end
+
+--- Test inspection helper returning a read-only table of currently registered handlers.
+---
+--- @return { [string]: any } Map of active lifecycle callback functions.
+function lifecycle.__getActiveHandlers(): { [string]: any }
+	return table.clone(activeHandlers)
+end
+
+-- =============================================================================
+-- Test Injection Hook
+-- =============================================================================
+
+--- Injects or clears the mock host instance for testing, resetting all registered handlers.
+---
+--- @param mockHost any? Mock host table or nil on teardown.
+function lifecycle.__setHost(mockHost: any?)
+	injectedHost = mockHost
+	lifecycle.unbind(getfenv())
 end
 
 return lifecycle

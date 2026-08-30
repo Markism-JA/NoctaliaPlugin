@@ -37,9 +37,10 @@ export type ExecCallback = (err: string?, stdout: string, exitCode: number) -> (
 
 --- Host interface definition required by proc.
 export type ProcHost = {
-	runAsync: ((cmdOrArgv: string | { string }, cb: (res: ProcessResult) -> ()) -> boolean)?,
+	runAsync: ((cmdOrArgv: string | { string }, cb: ((res: ProcessResult) -> ())?) -> boolean)?,
 	runStream: ((cmd: string, onLine: (line: string) -> ()) -> boolean)?,
 	commandExists: ((name: string) -> boolean)?,
+	[string]: any,
 }
 
 -- =============================================================================
@@ -61,12 +62,24 @@ local function fastTrim(str: string): string
 	return s or ""
 end
 
---- Resolves the effective subprocess host bridge.
+--- Resolves the effective host environment bridge, prioritizing active test mocks
+--- and checking runtime globals across `_G` and `getfenv()`.
 local function getHost(): any
 	if injectedHost ~= nil then
 		return injectedHost
 	end
-	return noctalia
+
+	local gHost = (_G :: any).noctalia
+	if gHost ~= nil then
+		return gHost
+	end
+
+	local fenvHost = (getfenv() :: any).noctalia
+	if fenvHost ~= nil then
+		return fenvHost
+	end
+
+	return nil
 end
 
 -- =============================================================================
@@ -97,7 +110,7 @@ function proc.exec(cmdOrArgv: string | { string }, cb: ExecCallback, options: Ex
 	local opts = options or DEFAULT_OPTS
 	local runner: any = getHost()
 
-	if runner == nil or runner.runAsync == nil then
+	if runner == nil or typeof(runner.runAsync) ~= "function" then
 		cb("Host process runner unavailable", "", -1)
 		return false
 	end
@@ -163,7 +176,7 @@ end
 --- @return boolean True if the launch request was accepted by the host queue.
 function proc.spawn(cmdOrArgv: string | { string }): boolean
 	local runner: any = getHost()
-	if runner == nil or runner.runAsync == nil then
+	if runner == nil or typeof(runner.runAsync) ~= "function" then
 		return false
 	end
 	return (runner.runAsync :: any)(cmdOrArgv) == true
@@ -185,7 +198,7 @@ end
 --- @return boolean True if the stream was accepted and started.
 function proc.stream(cmd: string, onLine: (line: string) -> ()): boolean
 	local runner: any = getHost()
-	if runner == nil or runner.runStream == nil then
+	if runner == nil or typeof(runner.runStream) ~= "function" then
 		return false
 	end
 	return (runner.runStream :: any)(cmd, onLine) == true
@@ -212,7 +225,7 @@ function proc.exists(name: string): boolean
 	end
 
 	local checker: any = getHost()
-	if checker == nil or checker.commandExists == nil then
+	if checker == nil or typeof(checker.commandExists) ~= "function" then
 		return false
 	end
 
@@ -225,6 +238,20 @@ end
 ---
 --- Call this during unit tests or runtime reloads if `$PATH` binaries may have changed.
 function proc.clearCache()
+	table.clear(PATH_CACHE)
+end
+
+-- =============================================================================
+-- Test Injection Hook
+-- =============================================================================
+
+--- Injects a custom mock host bridge for testing outside Noctalia runtimes.
+---
+--- Clears the binary path memoization cache. Passing `nil` restores default host resolution.
+---
+--- @param mockHost ProcHost? Mock host table implementing process execution methods.
+function proc.__setHost(mockHost: ProcHost?)
+	injectedHost = mockHost
 	table.clear(PATH_CACHE)
 end
 

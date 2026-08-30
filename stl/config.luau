@@ -13,6 +13,7 @@ local config = {}
 --- Host interface definition required by config.
 export type ConfigHost = {
 	getConfig: ((key: string) -> any)?,
+	[string]: any,
 }
 
 -- =============================================================================
@@ -22,15 +23,27 @@ export type ConfigHost = {
 --- Active mock host override injected during unit tests.
 local injectedHost: ConfigHost? = nil
 
---- Resolves the effective host environment bridge, prioritizing active test mocks.
+--- Resolves the effective host environment bridge, prioritizing active test mocks
+--- and checking runtime globals across `_G` and `getfenv()`.
 local function getHost(): any
 	if injectedHost ~= nil then
 		return injectedHost
 	end
-	return noctalia
+
+	local gHost = (_G :: any).noctalia
+	if gHost ~= nil then
+		return gHost
+	end
+
+	local fenvHost = (getfenv() :: any).noctalia
+	if fenvHost ~= nil then
+		return fenvHost
+	end
+
+	return nil
 end
 
---- Shallow clone helper to protect default table values from in-place mutation.
+--- Shallow clone helper to protect table values from in-place mutation.
 local function cloneTable<T>(val: T): T
 	if typeof(val) == "table" then
 		return (table.clone(val :: any) :: any) :: T
@@ -54,7 +67,7 @@ end
 --- @return string The resolved string value.
 function config.getString(key: string, defaultVal: string): string
 	local host: any = getHost()
-	if host == nil or host.getConfig == nil then
+	if host == nil or typeof(host.getConfig) ~= "function" then
 		return defaultVal
 	end
 
@@ -74,7 +87,7 @@ end
 --- @return boolean The resolved boolean value.
 function config.getBool(key: string, defaultVal: boolean): boolean
 	local host: any = getHost()
-	if host == nil or host.getConfig == nil then
+	if host == nil or typeof(host.getConfig) ~= "function" then
 		return defaultVal
 	end
 
@@ -94,7 +107,7 @@ end
 --- @return number The resolved numeric value.
 function config.getNumber(key: string, defaultVal: number): number
 	local host: any = getHost()
-	if host == nil or host.getConfig == nil then
+	if host == nil or typeof(host.getConfig) ~= "function" then
 		return defaultVal
 	end
 
@@ -114,13 +127,13 @@ end
 --- @return { string } A list of strings.
 function config.getStringList(key: string, defaultVal: { string }): { string }
 	local host: any = getHost()
-	if host == nil or host.getConfig == nil then
+	if host == nil or typeof(host.getConfig) ~= "function" then
 		return cloneTable(defaultVal)
 	end
 
 	local val = (host.getConfig :: any)(key)
 	if typeof(val) == "table" then
-		return val :: { string }
+		return cloneTable(val :: { string })
 	end
 	return cloneTable(defaultVal)
 end
@@ -137,13 +150,13 @@ end
 --- @return { [string]: string } A key-value map of strings.
 function config.getStringMap(key: string, defaultVal: { [string]: string }): { [string]: string }
 	local host: any = getHost()
-	if host == nil or host.getConfig == nil then
+	if host == nil or typeof(host.getConfig) ~= "function" then
 		return cloneTable(defaultVal)
 	end
 
 	local val = (host.getConfig :: any)(key)
 	if typeof(val) == "table" then
-		return val :: { [string]: string }
+		return cloneTable(val :: { [string]: string })
 	end
 	return cloneTable(defaultVal)
 end

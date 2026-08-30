@@ -33,6 +33,7 @@ export type FilesystemHost = {
 		decode: ((str: string) -> (any, string?))?,
 		encode: ((val: any, pretty: boolean?) -> (string, string?))?,
 	}?,
+	[string]: any,
 }
 
 -- =============================================================================
@@ -46,18 +47,30 @@ local injectedHost: FilesystemHost? = nil
 -- Internal Helpers
 -- =============================================================================
 
---- Resolves the effective host environment bridge, prioritizing active test mocks.
+--- Resolves the effective host environment bridge, prioritizing active test mocks
+--- and checking runtime globals across `_G` and `getfenv()`.
 local function getHost(): any
 	if injectedHost ~= nil then
 		return injectedHost
 	end
-	return noctalia
+
+	local gHost = (_G :: any).noctalia
+	if gHost ~= nil then
+		return gHost
+	end
+
+	local fenvHost = (getfenv() :: any).noctalia
+	if fenvHost ~= nil then
+		return fenvHost
+	end
+
+	return nil
 end
 
 --- Expands `~` and path aliases safely across live and test environments.
 local function safeExpand(path: string): string
 	local host: any = getHost()
-	if string.sub(path, 1, 1) == "~" and host ~= nil and host.expandPath ~= nil then
+	if string.sub(path, 1, 1) == "~" and host ~= nil and typeof(host.expandPath) == "function" then
 		return (host.expandPath :: (string) -> string)(path)
 	end
 	return path
@@ -150,7 +163,7 @@ end
 --- @return boolean True if the path exists.
 function filesystem.exists(path: string): boolean
 	local host: any = getHost()
-	if host == nil or host.fileExists == nil then
+	if host == nil or typeof(host.fileExists) ~= "function" then
 		return false
 	end
 	local expanded = safeExpand(path)
@@ -163,7 +176,7 @@ end
 --- @return (FileInfo?, string?) Metadata record on success, or nil and error message.
 function filesystem.fileInfo(path: string): (FileInfo?, string?)
 	local host: any = getHost()
-	if host == nil or host.fileInfo == nil then
+	if host == nil or typeof(host.fileInfo) ~= "function" then
 		return nil, "Host fileInfo API unavailable"
 	end
 	local expanded = safeExpand(path)
@@ -176,7 +189,7 @@ end
 --- @return ({ string }?, string?) Array of entry names on success, or nil and error.
 function filesystem.listDir(path: string): ({ string }?, string?)
 	local host: any = getHost()
-	if host == nil or host.listDir == nil then
+	if host == nil or typeof(host.listDir) ~= "function" then
 		return nil, "Host listDir API unavailable"
 	end
 	local expanded = safeExpand(path)
@@ -189,7 +202,7 @@ end
 --- @return (string?, string?) File content on success, or nil and error message.
 function filesystem.readText(path: string): (string?, string?)
 	local host: any = getHost()
-	if host == nil or host.readFile == nil then
+	if host == nil or typeof(host.readFile) ~= "function" then
 		return nil, "Host readFile API unavailable"
 	end
 	local expanded = safeExpand(path)
@@ -203,14 +216,14 @@ end
 --- @return (boolean, string?) True on success, or false and error message.
 function filesystem.writeText(path: string, content: string): (boolean, string?)
 	local host: any = getHost()
-	if host == nil or host.writeFile == nil then
+	if host == nil or typeof(host.writeFile) ~= "function" then
 		return false, "Host writeFile API unavailable"
 	end
 
 	local expanded = safeExpand(path)
 	local parentDir = filesystem.dirName(expanded)
 
-	if parentDir ~= "." and parentDir ~= "/" and host.mkdirAll ~= nil then
+	if parentDir ~= "." and parentDir ~= "/" and typeof(host.mkdirAll) == "function" then
 		pcall(function()
 			(host.mkdirAll :: (string) -> (boolean, string?))(parentDir)
 		end)
@@ -239,7 +252,7 @@ function filesystem.readJson(path: string): (any?, string?)
 	end
 
 	local host: any = getHost()
-	if host == nil or host.json == nil or host.json.decode == nil then
+	if host == nil or host.json == nil or typeof(host.json.decode) ~= "function" then
 		return nil, "Host JSON decoder unavailable"
 	end
 
@@ -259,7 +272,7 @@ end
 --- @return (boolean, string?) True on success, or false and error message.
 function filesystem.writeJson(path: string, value: any, pretty: boolean?): (boolean, string?)
 	local host: any = getHost()
-	if host == nil or host.json == nil or host.json.encode == nil then
+	if host == nil or host.json == nil or typeof(host.json.encode) ~= "function" then
 		return false, "Host JSON encoder unavailable"
 	end
 
@@ -281,7 +294,7 @@ end
 --- @return (string?, string?) Absolute directory path, or nil and error message.
 function filesystem.getDataDir(): (string?, string?)
 	local host: any = getHost()
-	if host == nil or host.pluginDataDir == nil then
+	if host == nil or typeof(host.pluginDataDir) ~= "function" then
 		return nil, "Host pluginDataDir API unavailable"
 	end
 	return (host.pluginDataDir :: () -> (string?, string?))()

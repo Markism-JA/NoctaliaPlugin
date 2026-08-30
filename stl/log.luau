@@ -71,6 +71,7 @@ export type LogHost = {
 	state: {
 		set: ((key: string, val: any) -> ())?,
 	}?,
+	[string]: any,
 }
 
 -- =============================================================================
@@ -105,14 +106,24 @@ local injectedHost: LogHost? = nil
 -- Internal Helpers
 -- =============================================================================
 
---- Resolves the effective host environment bridge, prioritizing active test mocks.
----
---- @return any The active host table (`injectedHost` or `noctalia`).
+--- Resolves the effective host environment bridge, prioritizing active test mocks
+--- and checking runtime globals across `_G` and `getfenv()`.
 local function getHost(): any
 	if injectedHost ~= nil then
 		return injectedHost
 	end
-	return noctalia
+
+	local gHost = (_G :: any).noctalia
+	if gHost ~= nil then
+		return gHost
+	end
+
+	local fenvHost = (getfenv() :: any).noctalia
+	if fenvHost ~= nil then
+		return fenvHost
+	end
+
+	return nil
 end
 
 --- Recursively serializes arbitrary Lua values into JSON-compliant strings for test fallbacks.
@@ -150,7 +161,7 @@ local function serializeContext(ctx: { [string]: any }?): string
 	end
 
 	local host: any = getHost()
-	if host ~= nil and host.json ~= nil and host.json.encode ~= nil then
+	if host ~= nil and host.json ~= nil and typeof(host.json.encode) == "function" then
 		local encoded, _ = (host.json.encode :: any)(ctx)
 		if typeof(encoded) == "string" then
 			return " " .. encoded
@@ -165,7 +176,7 @@ end
 --- @return string Formatted timestamp.
 local function getTimestamp(): string
 	local host: any = getHost()
-	if host ~= nil and host.formatTime ~= nil then
+	if host ~= nil and typeof(host.formatTime) == "function" then
 		return (host.formatTime :: (string) -> string)("%Y-%m-%d %H:%M:%S")
 	end
 
@@ -180,7 +191,8 @@ end
 --- @param msg string Primary log message.
 --- @param ctx { [string]: any }? Optional structured metadata table.
 local function emit(levelStr: LogLevel, tag: string, msg: string, ctx: { [string]: any }?)
-	if LEVEL_SEVERITY[levelStr] < currentMinLevel then
+	local targetSeverity = LEVEL_SEVERITY[levelStr] or LEVEL_SEVERITY.INFO
+	if targetSeverity < currentMinLevel then
 		return
 	end
 
@@ -188,7 +200,7 @@ local function emit(levelStr: LogLevel, tag: string, msg: string, ctx: { [string
 	local contextStr = serializeContext(ctx)
 
 	-- Sink 1: Host Console or Process Terminal Stdout
-	if host ~= nil and host.log ~= nil then
+	if host ~= nil and typeof(host.log) == "function" then
 		(host.log :: (string) -> ())(string.format("[%s] [%s] %s%s", levelStr, tag, msg, contextStr))
 	else
 		local ts = getTimestamp()
@@ -196,7 +208,7 @@ local function emit(levelStr: LogLevel, tag: string, msg: string, ctx: { [string
 	end
 
 	-- Sink 2: Cross-VM In-Memory IPC Ring Buffer
-	if host ~= nil and host.state ~= nil and host.state.set ~= nil then
+	if host ~= nil and host.state ~= nil and typeof(host.state.set) == "function" then
 		local record: LogRecord = {
 			timestamp = getTimestamp(),
 			level = levelStr,
@@ -210,7 +222,7 @@ local function emit(levelStr: LogLevel, tag: string, msg: string, ctx: { [string
 			table.remove(ringBuffer, 1)
 		end
 
-		(host.state.set :: any)(STATE_LOG_KEY, ringBuffer)
+		(host.state.set :: any)(STATE_LOG_KEY, table.clone(ringBuffer))
 	end
 end
 
@@ -255,7 +267,7 @@ end
 --- @param configKey string? Optional configuration key name to inspect (defaults to "log_level").
 function log.syncFromConfig(configKey: string?)
 	local host: any = getHost()
-	if host == nil or host.getConfig == nil then
+	if host == nil or typeof(host.getConfig) ~= "function" then
 		return
 	end
 
@@ -302,7 +314,7 @@ end
 ---
 --- @return { LogRecord } Array containing up to 100 historical log entries.
 function log.getBuffer(): { LogRecord }
-	return ringBuffer
+	return table.clone(ringBuffer)
 end
 
 --- Purges all historical records currently held in the local memory ring buffer.
@@ -316,11 +328,12 @@ end
 
 --- Injects a custom mock host bridge for testing outside Noctalia runtimes.
 ---
---- Resets the local memory ring buffer. Passing `nil` restores default host resolution.
+--- Resets the local memory ring buffer and restores default log level. Passing `nil` restores default host resolution.
 ---
 --- @param mockHost LogHost? Mock host table implementing logging or state functions.
 function log.__setHost(mockHost: LogHost?)
 	injectedHost = mockHost
+	currentMinLevel = LEVEL_SEVERITY.INFO
 	table.clear(ringBuffer)
 end
 

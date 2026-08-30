@@ -36,14 +36,26 @@ compat.API = apiMatrix
 --- Active mock host override injected during unit tests.
 local injectedHost: CompatHost? = nil
 
---- Resolves the effective host environment bridge, prioritizing active test mocks.
+--- Resolves the effective host environment bridge, prioritizing active test mocks
+--- and checking runtime globals across `_G` and `getfenv()`.
 ---
---- @return any The active host table (`injectedHost` or `noctalia`).
+--- @return any The active host table.
 local function getHost(): any
 	if injectedHost ~= nil then
 		return injectedHost
 	end
-	return noctalia
+
+	local gHost = (_G :: any).noctalia
+	if gHost ~= nil then
+		return gHost
+	end
+
+	local fenvHost = (getfenv() :: any).noctalia
+	if fenvHost ~= nil then
+		return fenvHost
+	end
+
+	return nil
 end
 
 --- Dispatches formatted diagnostic logs to the host console or standard output.
@@ -53,7 +65,7 @@ end
 local function logMessage(prefix: string, message: string)
 	local host: any = getHost()
 	local formatted = string.format("[%s] %s", prefix, message)
-	if host ~= nil and host.log ~= nil then
+	if host ~= nil and typeof(host.log) == "function" then
 		(host.log :: (string) -> ())(formatted)
 	else
 		print(formatted)
@@ -260,10 +272,10 @@ function compat.withFallback<T>(primary: () -> T, fallback: () -> T): T
 end
 
 -- =============================================================================
--- Test Injection Hook
+-- Test Harness Hook
 -- =============================================================================
 
---- Injects a custom mock host bridge for headless unit tests.
+--- Injects or clears the mock host instance for testing.
 ---
 --- Passing `nil` restores default host resolution.
 ---
