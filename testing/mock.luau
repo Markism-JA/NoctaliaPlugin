@@ -3,7 +3,24 @@
 ---
 --- Emulates the native Noctalia C/Rust host environment for headless test harnesses
 --- (Lune and Luau CLI). Provides state channel pub/sub, process execution hooks, virtual
---- filesystem inspection, and capability stripping across simulated API tiers (levels 3 to 28).
+--- filesystem inspection, configuration bridging, and capability stripping across simulated API tiers (levels 3 to 28).
+---
+--- ### Example:
+--- ```luau
+--- local mock = require("./testing/mock.luau")
+--- local host = mock.create(28)
+---
+--- host.setConfig("theme", "catppuccin")
+--- host.setExecHandler(function(cmd)
+---     if cmd == "hyprctl activewindow -j" then
+---         return 0, '{"title":"Terminal","class":"kitty"}', ""
+---     end
+---     return 1, "", "command not found"
+--- end)
+---
+--- local rawG = _G :: any
+--- rawG.noctalia = host
+--- ```
 
 local apiMatrix = require("../stl/api_matrix.luau")
 
@@ -111,6 +128,18 @@ export type MockHost = {
 	--- In-memory state channel namespace.
 	state: MockState,
 
+	--- Resolves configuration settings by key identifier (consumed by `stl.config`).
+	---
+	--- @param key string Configuration key identifier.
+	--- @return any The configured value or `nil` if unset.
+	getConfig: (key: string) -> any,
+
+	--- Injects or overrides configuration values in the mock store for unit testing.
+	---
+	--- @param key string Configuration key identifier.
+	--- @param val any Configuration value to assign.
+	setConfig: (key: string, val: any) -> (),
+
 	--- Checks whether an executable binary exists on the system `$PATH`.
 	---
 	--- @param name string Executable binary name to check.
@@ -191,7 +220,7 @@ export type MockHost = {
 	--- @param level number Target API level (3 through 28).
 	setApiLevel: (level: number) -> (),
 
-	--- Restores initial API level, clears state channels, and resets execution handlers.
+	--- Restores initial API level, clears state channels and configurations, and resets execution handlers.
 	reset: () -> (),
 }
 
@@ -212,6 +241,7 @@ local mock = {}
 --- local mock = require("./testing/mock.luau")
 --- local host = mock.create(19) -- Simulate Noctalia v5.0.0-beta.7
 ---
+--- host.setConfig("compositor", "hyprland")
 --- host.setExecHandler(function(cmd)
 ---     if cmd == "hyprctl activewindow -j" then
 ---         return 0, '{"title":"Terminal","class":"kitty"}', ""
@@ -224,6 +254,7 @@ local mock = {}
 --- @return MockHost Fully configured and isolated mock host bridge.
 function mock.create(initialApiLevel: number?): MockHost
 	local store: { [string]: any } = {}
+	local configStore: { [string]: any } = {}
 	local watchers: { [string]: { (val: any) -> () } } = {}
 	local envVars: { [string]: string } = { HOME = "/home/user" }
 	local execHandler: ExecHandler? = nil
@@ -301,11 +332,19 @@ function mock.create(initialApiLevel: number?): MockHost
 		pluginApiLevel = activeLevel,
 		state = stateObj,
 
+		getConfig = function(key: string): any
+			return configStore[key]
+		end,
+
+		setConfig = function(key: string, val: any)
+			configStore[key] = val
+		end,
+
 		commandExists = function(_name: string): boolean
 			return true
 		end,
 
-		runAsync = function(cmdOrArgv: any, cb: MockCallback?): boolean
+		runAsync = function(cmdOrArgv: any, cb: MockCallback?)
 			if typeof(cmdOrArgv) == "table" and activeLevel < 24 then
 				error("Host API level below 24 does not support argv table execution")
 			end
@@ -389,6 +428,7 @@ function mock.create(initialApiLevel: number?): MockHost
 
 		reset = function()
 			stateObj.clear()
+			table.clear(configStore)
 			execHandler = nil
 			applyApiLevel(initialApiLevel or apiMatrix.MAX_SUPPORTED_LEVEL)
 		end,
@@ -400,7 +440,7 @@ function mock.create(initialApiLevel: number?): MockHost
 	return host
 end
 
---- Alias for `mock.create` to maintain backwards compatibility with facade loaders.
+--- Alias for `mock.create` to maintain backwards compatibility.
 mock.createMockHost = mock.create
 
 return mock

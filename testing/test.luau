@@ -3,6 +3,30 @@
 ---
 --- Provides structured suite definition, lifecycle hooks (`beforeEach`, `afterEach`),
 --- recursive deep equality assertion with cycle and NaN handling, and formatted CLI test reporting.
+---
+--- ### Example:
+--- ```luau
+--- local test = require("./testing/test.luau")
+---
+--- test.suite("Math Operations", function(b)
+---     local state: number
+---
+---     b.beforeEach(function()
+---         state = 10
+---     end)
+---
+---     b.test("adds numbers correctly", function()
+---         test.assert.equal(state + 5, 15)
+---     end)
+---
+---     b.test("handles nil checks", function()
+---         local val: string? = nil
+---         test.assert.isNil(val)
+---     end)
+--- end)
+---
+--- local passed, failed = test.run()
+--- ```
 local test = {}
 
 -- =============================================================================
@@ -33,16 +57,37 @@ export type TestSuite = {
 export type SuiteBuilder = {
 	--- Registers a new test case into the active suite.
 	---
+	--- ### Example:
+	--- ```luau
+	--- b.test("verifies output payload", function()
+	---     test.assert.truthy(true)
+	--- end)
+	--- ```
+	---
 	--- @param name string Descriptive test name.
 	--- @param fn () -> () Closure containing test assertions.
 	test: (name: string, fn: () -> ()) -> (),
 
 	--- Registers a pre-test setup hook executed before every test in this suite.
 	---
+	--- ### Example:
+	--- ```luau
+	--- b.beforeEach(function()
+	---     database.connect()
+	--- end)
+	--- ```
+	---
 	--- @param fn () -> () Setup logic closure.
 	beforeEach: (fn: () -> ()) -> (),
 
 	--- Registers a post-test cleanup hook executed after every test in this suite.
+	---
+	--- ### Example:
+	--- ```luau
+	--- b.afterEach(function()
+	---     database.disconnect()
+	--- end)
+	--- ```
 	---
 	--- @param fn () -> () Teardown logic closure.
 	afterEach: (fn: () -> ()) -> (),
@@ -50,8 +95,35 @@ export type SuiteBuilder = {
 
 --- Public assertion library interface.
 export type Assertions = {
+	--- Asserts that `value` is strictly `nil`.
+	---
+	--- ### Example:
+	--- ```luau
+	--- test.assert.isNil(result, "Expected query result to be nil")
+	--- ```
+	---
+	--- @param value any Value to inspect.
+	--- @param msg string? Optional custom failure message.
+	isNil: (value: any, msg: string?) -> (),
+
+	--- Asserts that `value` is not `nil`.
+	---
+	--- ### Example:
+	--- ```luau
+	--- test.assert.isNotNil(session, "Session should be initialized")
+	--- ```
+	---
+	--- @param value any Value to inspect.
+	--- @param msg string? Optional custom failure message.
+	isNotNil: (value: any, msg: string?) -> (),
+
 	--- Asserts that `actual` and `expected` are strictly equal (`==`).
 	--- Handles numeric `NaN == NaN` as a valid equality case.
+	---
+	--- ### Example:
+	--- ```luau
+	--- test.assert.equal(response.status, 200, "Status must be OK")
+	--- ```
 	---
 	--- @param actual T Actual resolved value.
 	--- @param expected T Expected reference value.
@@ -60,12 +132,22 @@ export type Assertions = {
 
 	--- Asserts that `actual` and `expected` are not equal (`~=`).
 	---
+	--- ### Example:
+	--- ```luau
+	--- test.assert.notEqual(token, "", "Token must not be empty")
+	--- ```
+	---
 	--- @param actual T Actual resolved value.
 	--- @param expected T Unexpected reference value.
 	--- @param msg string? Optional custom failure message prefix.
 	notEqual: <T>(actual: T, expected: T, msg: string?) -> (),
 
 	--- Performs recursive structural comparison across arbitrary nested tables, arrays, and scalar values.
+	---
+	--- ### Example:
+	--- ```luau
+	--- test.assert.deepEqual(userProfile, { id = 1, roles = { "admin" } })
+	--- ```
 	---
 	--- @param actual any Actual structure or value.
 	--- @param expected any Expected reference structure.
@@ -74,6 +156,11 @@ export type Assertions = {
 
 	--- Asserts that an array contains an item matching `item` (evaluated via recursive deep comparison).
 	---
+	--- ### Example:
+	--- ```luau
+	--- test.assert.contains({ "SUPER", "CTRL" }, "SUPER")
+	--- ```
+	---
 	--- @param array { any } Array to inspect.
 	--- @param item any Expected element inside `array`.
 	--- @param msg string? Optional custom failure message prefix.
@@ -81,17 +168,34 @@ export type Assertions = {
 
 	--- Asserts that `value` evaluates to a truthy value (neither `nil` nor `false`).
 	---
+	--- ### Example:
+	--- ```luau
+	--- test.assert.truthy(isConnected, "Connection flag must be true")
+	--- ```
+	---
 	--- @param value any Value to inspect.
 	--- @param msg string? Optional custom failure message.
 	truthy: (value: any, msg: string?) -> (),
 
 	--- Asserts that `value` evaluates to a falsy value (`nil` or `false`).
 	---
+	--- ### Example:
+	--- ```luau
+	--- test.assert.falsy(hasError, "Error flag should not be active")
+	--- ```
+	---
 	--- @param value any Value to inspect.
 	--- @param msg string? Optional custom failure message.
 	falsy: (value: any, msg: string?) -> (),
 
 	--- Asserts that invoking `fn` raises a runtime error, optionally matching a substring.
+	---
+	--- ### Example:
+	--- ```luau
+	--- test.assert.throws(function()
+	---     parseInvalidInput("")
+	--- end, "unexpected EOF")
+	--- ```
 	---
 	--- @param fn () -> () Closure expected to throw an exception.
 	--- @param expectedSubstring string? Optional substring that must be present in the error message.
@@ -209,9 +313,20 @@ end
 -- =============================================================================
 
 test.assert = {
+	isNil = function(value: any, msg: string?)
+		if value ~= nil then
+			error(msg or string.format("Expected nil, got %s", safeSerialize(value)), 2)
+		end
+	end,
+
+	isNotNil = function(value: any, msg: string?)
+		if value == nil then
+			error(msg or "Expected value not to be nil", 2)
+		end
+	end,
+
 	equal = function<T>(actual: T, expected: T, msg: string?)
 		if actual ~= expected then
-			-- Check NaN edge case
 			if
 				typeof(actual) == "number"
 				and typeof(expected) == "number"

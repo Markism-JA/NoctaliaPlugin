@@ -75,13 +75,23 @@ export type ScanRule = {
 	category: string,
 }
 
+export type PatternRule = {
+	pattern: string,
+	section: string,
+	subsection: string,
+	category: string,
+}
+
 export type ParseContext = {
 	bindings: { BindingEntry },
 	variables: { [string]: string },
 	warnings: { string },
 	sources: { SourceSnapshot },
 	exactRules: { [string]: ScanRule },
+	patternRules: { PatternRule },
 }
+
+export type JsonDecodeFn = (string) -> (any, string?)
 
 -- =============================================================================
 -- Constants & Static Configurations
@@ -121,11 +131,26 @@ local MODIFIER_ALIASES: { [string]: string } = {
 	MOD1 = "ALT",
 }
 
--- Optional JSON decode override for test harnesses
 local customJsonDecoder: JsonDecodeFn? = nil
 
 -- =============================================================================
--- Pure Utility & Parser Methods (Exported for Testing)
+-- Host Environment Resolver
+-- =============================================================================
+
+local function getHost(): any
+	return (_G :: any).noctalia or (getfenv() :: any).noctalia
+end
+
+local function tr(key: string, default: string?): string
+	local host: any = getHost()
+	if host ~= nil and typeof(host.tr) == "function" then
+		return (host.tr :: (string) -> string?)(key) or (default or key)
+	end
+	return default or key
+end
+
+-- =============================================================================
+-- Pure Utility & Parser Methods
 -- =============================================================================
 
 function service.lower(s: string?): string
@@ -140,11 +165,15 @@ function service.trim(s: string?): string
 	if not s or s == "" then
 		return ""
 	end
-	local from = string.match(s, "^%s*()")
-	if not from then
+	local first = string.find(s, "%S")
+	if not first then
 		return ""
 	end
-	return if from > #s then "" else (string.match(s, ".*%S", from) or "")
+	local last = #s
+	while last >= first and string.find(string.sub(s, last, last), "%s") do
+		last -= 1
+	end
+	return string.sub(s, first, last)
 end
 
 function service.normalizePath(path: string): string
@@ -169,11 +198,12 @@ function service.normalizePath(path: string): string
 end
 
 function service.expandEnvironment(path: string): string
+	local host: any = getHost()
 	local function getEnvSafe(name: string): string?
-		if (noctalia :: any) ~= nil and (noctalia :: any).getenv ~= nil then
-			return noctalia.getenv(name)
+		if host ~= nil and typeof(host.getenv) == "function" then
+			return (host.getenv :: (string) -> string?)(name)
 		elseif (os :: any) ~= nil and typeof((os :: any).getenv) == "function" then
-			return (os :: any).getenv(name)
+			return ((os :: any).getenv :: (string) -> string?)(name)
 		end
 		return nil
 	end
@@ -185,8 +215,8 @@ function service.expandEnvironment(path: string): string
 	local homeVal = getEnvSafe("HOME")
 	expanded = string.gsub(expanded, "%$HOME", homeVal or "~")
 
-	if (noctalia :: any) ~= nil and (noctalia :: any).expandPath ~= nil then
-		return noctalia.expandPath(expanded)
+	if host ~= nil and typeof(host.expandPath) == "function" then
+		return (host.expandPath :: (string) -> string)(expanded)
 	end
 	return expanded
 end
@@ -207,40 +237,45 @@ function service.splitCsv(value: string, maximumParts: number?): { string }
 	return parts
 end
 
+--- Parses Typst-style markdown headings (-- =, -- ==, # =, // =)
 function service.parseHeading(rawLine: string): { level: number, title: string }?
-	local body = string.match(rawLine, "^%s*#+%s*(.*)$")
-		or string.match(rawLine, "^%s*%-%-+%s*(.*)$")
-		or string.match(rawLine, "^%s*//+%s*(.*)$")
-	if not body then
+	local trimmed = service.trim(rawLine)
+	local commentPrefix, rest = string.match(trimmed, "^([%-#/]+)%s*(.*)$")
+	if not commentPrefix or not rest or rest == "" then
+		return nil
+	end
+
+	-- Ignore pure decorative lines like -- ====================
+	if string.match(rest, "^=+%s*$") then
 		return nil
 	end
 
 	local level = 0
-	local rawText = ""
+	local rawTitle = ""
 
-	local sub = string.match(body, "^==+%s*(.*)$")
-	if sub then
+	-- Level 2: == Title (optionally closed with ==)
+	local l2 = string.match(rest, "^==%s+(.-)%s*==*$") or string.match(rest, "^==%s+(.-)%s*$")
+	if l2 and l2 ~= "" then
 		level = 2
-		rawText = sub
+		rawTitle = l2
 	else
-		local main = string.match(body, "^=+%s*(.*)$")
-		if main then
+		-- Level 1: = Title (optionally closed with =)
+		local l1 = string.match(rest, "^=%s+(.-)%s*=+$") or string.match(rest, "^=%s+(.-)%s*$")
+		if l1 and l1 ~= "" then
 			level = 1
-			rawText = main
+			rawTitle = l1
 		end
 	end
 
-	if level == 0 or rawText == "" then
+	if level == 0 or rawTitle == "" then
 		return nil
 	end
 
-	local stripped = string.gsub(rawText, "=+$", "")
-	local rawTitle = string.match(stripped, "^%s*(.-)%s*$")
-	if not rawTitle or #rawTitle < 2 or #rawTitle > 45 then
+	local title = service.trim(rawTitle)
+	if #title < 2 or #title > 55 then
 		return nil
 	end
 
-	local title: string = rawTitle
 	local l = service.lower(title)
 	if
 		string.match(l, "^bind")
@@ -261,7 +296,7 @@ function service.parseHeading(rawLine: string): { level: number, title: string }
 end
 
 function service.buildCategory(section: string, subsection: string): string
-	if subsection ~= "" then
+	if subsection ~= "" and subsection ~= section then
 		return section .. " • " .. subsection
 	end
 	return section
@@ -271,6 +306,7 @@ function service.normalizeModifiers(value: string?, variables: { [string]: strin
 	local raw = value or ""
 	if variables then
 		for varName, varVal in variables do
+			raw = string.gsub(raw, "%$" .. varName, varVal)
 			raw = string.gsub(raw, varName, varVal)
 		end
 	end
@@ -475,7 +511,7 @@ function service.parseMangoContent(content: string, sourceFile: string, context:
 				end
 			elseif string.find(line, "bind", 1, true) ~= nil then
 				local clean, description = service.extractTrailingDescription(line)
-				local directive, body = string.match(clean, "^([%a]*bind)%s*=%s*(.*)$")
+				local directive, body = string.match(clean, "^([%a]*bind[%a]*)%s*=%s*(.*)$")
 				if directive ~= nil and body ~= nil then
 					local fields = service.splitCsv(body)
 					local modifiers = service.normalizeModifiers(fields[1], nil)
@@ -658,6 +694,7 @@ function service.parseNiriContent(content: string, sourceFile: string, context: 
 	end
 end
 
+--- Scans a Lua file with isolated section/subsection context and catches dynamic template strings
 function service.scanHyprLuaContent(content: string, context: ParseContext)
 	local currentSection = "General"
 	local currentSubsection = ""
@@ -672,14 +709,39 @@ function service.scanHyprLuaContent(content: string, context: ParseContext)
 				currentSubsection = heading.title
 			end
 		elseif string.find(line, "desc", 1, true) then
+			-- 1. Exact string literals: description = "..."
 			local desc = string.match(line, "description%s*=%s*[\"']([^\"']+)[\"']")
 				or string.match(line, "desc%s*=%s*[\"']([^\"']+)[\"']")
-			if desc and desc ~= "" then
+
+			if desc and desc ~= "" and not string.find(line, "%.%.") then
 				context.exactRules[desc] = {
 					section = currentSection,
 					subsection = currentSubsection,
 					category = service.buildCategory(currentSection, currentSubsection),
 				}
+			else
+				-- 2. Dynamic string concatenation: description = "Prefix " .. i .. " Suffix"
+				local descChunk = string.match(line, "description%s*=%s*(.-)[,}]")
+					or string.match(line, "desc%s*=%s*(.-)[,}]")
+
+				if descChunk then
+					local parts: { string } = {}
+					for strLit in string.gmatch(descChunk, "[\"']([^\"']+)[\"']") do
+						-- Escape regex magic chars for safe pattern matching
+						local escaped = string.gsub(strLit, "([%(%)%.%%%+%-%*%?%[%]%^%$])", "%%%1")
+						table.insert(parts, escaped)
+					end
+
+					if #parts > 0 then
+						local dynamicPattern = "^" .. table.concat(parts, ".-") .. "$"
+						table.insert(context.patternRules, {
+							pattern = dynamicPattern,
+							section = currentSection,
+							subsection = currentSubsection,
+							category = service.buildCategory(currentSection, currentSubsection),
+						})
+					end
+				end
 			end
 		end
 	end
@@ -693,6 +755,7 @@ function service.scanHyprLua(rootPath: string): ParseContext
 		warnings = {},
 		sources = {},
 		exactRules = {},
+		patternRules = {},
 	}
 
 	local visited: { [string]: boolean } = {}
@@ -732,7 +795,7 @@ function service.scanHyprLua(rootPath: string): ParseContext
 					or string.find(content, "%-%-")
 				)
 			then
-				local info, _ = noctalia.fileInfo(normPath)
+				local info, _ = filesystem.fileInfo(normPath)
 				if info then
 					table.insert(context.sources, { path = normPath, size = info.size, mtime = info.mtime })
 				end
@@ -744,20 +807,18 @@ function service.scanHyprLua(rootPath: string): ParseContext
 	return context
 end
 
-type JsonDecodeFn = (string) -> (any, string?)
+function service.__setJsonDecoder(decoder: JsonDecodeFn?)
+	customJsonDecoder = decoder
+end
 
 local function resolveJsonDecoder(): JsonDecodeFn?
 	if customJsonDecoder ~= nil then
 		return customJsonDecoder
 	end
 
-	local noctaliaHost = noctalia :: any
-	if
-		typeof(noctaliaHost) == "table"
-		and typeof(noctaliaHost.json) == "table"
-		and typeof(noctaliaHost.json.decode) == "function"
-	then
-		return noctaliaHost.json.decode :: JsonDecodeFn
+	local host = getHost()
+	if host and typeof(host.json) == "table" and typeof(host.json.decode) == "function" then
+		return host.json.decode :: JsonDecodeFn
 	end
 
 	return nil
@@ -813,7 +874,23 @@ function service.parseHyprJson(raw: string, scanContext: ParseContext): ({ Bindi
 					table.insert(modifiers, "MOD5")
 				end
 
+				-- 1. Exact string match
 				local rule: ScanRule? = scanContext.exactRules[description]
+
+				-- 2. Dynamic pattern evaluation
+				if not rule and #scanContext.patternRules > 0 and description ~= "" then
+					for _, pRule in ipairs(scanContext.patternRules) do
+						if string.match(description, pRule.pattern) then
+							rule = {
+								section = pRule.section,
+								subsection = pRule.subsection,
+								category = pRule.category,
+							}
+							break
+						end
+					end
+				end
+
 				local section: string = if rule then rule.section else ""
 				local subsection: string = if rule then rule.subsection else ""
 				local category: string = if rule and rule.category ~= ""
@@ -850,7 +927,7 @@ end
 -- Orchestration & File Walkers
 -- =============================================================================
 
-local function collectSourceFiles(
+function service.collectSourceFiles(
 	dirPath: string,
 	extensionPattern: string,
 	depth: number?,
@@ -865,7 +942,7 @@ local function collectSourceFiles(
 		return results
 	end
 
-	local entries, _ = noctalia.listDir(dirPath)
+	local entries, _ = filesystem.listDir(dirPath)
 	if not entries then
 		return results
 	end
@@ -876,10 +953,10 @@ local function collectSourceFiles(
 
 			if not visited[fullPath] then
 				visited[fullPath] = true
-				local info, _ = noctalia.fileInfo(fullPath)
+				local info, _ = filesystem.fileInfo(fullPath)
 				if info then
 					if info.isDir then
-						collectSourceFiles(fullPath, extensionPattern, currentDepth + 1, visited, results)
+						service.collectSourceFiles(fullPath, extensionPattern, currentDepth + 1, visited, results)
 					elseif string.match(name, extensionPattern) and info.size <= MAX_FILE_SIZE_BYTES then
 						table.insert(results, fullPath)
 					end
@@ -891,13 +968,13 @@ local function collectSourceFiles(
 	return results
 end
 
-local function walkConfig(
+function service.walkConfig(
 	rootPath: string,
 	parserFn: (string, string, ParseContext) -> (),
 	extensionPattern: string
 ): ParseContext
 	local rootDir = filesystem.dirName(service.normalizePath(service.expandEnvironment(rootPath)))
-	local files = collectSourceFiles(rootDir, extensionPattern)
+	local files = service.collectSourceFiles(rootDir, extensionPattern)
 	local normalizedRoot = service.normalizePath(service.expandEnvironment(rootPath))
 
 	local context: ParseContext = {
@@ -906,6 +983,7 @@ local function walkConfig(
 		warnings = {},
 		sources = {},
 		exactRules = {},
+		patternRules = {},
 	}
 
 	local fileSet: { [string]: boolean } = {}
@@ -920,7 +998,7 @@ local function walkConfig(
 	for _, path in ipairs(files) do
 		local content, _ = filesystem.readText(path)
 		if content then
-			local info, _ = noctalia.fileInfo(path)
+			local info, _ = filesystem.fileInfo(path)
 			if info then
 				table.insert(context.sources, { path = path, size = info.size, mtime = info.mtime })
 			end
@@ -931,25 +1009,30 @@ local function walkConfig(
 	return context
 end
 
-local function detectCompositor(): Compositor
+function service.detectCompositor(): Compositor
 	local forced = config.getString("compositor", "auto")
 	if forced == "mango" or forced == "hyprland" or forced == "niri" then
 		return forced
 	end
-	if noctalia.getenv("MANGO_INSTANCE_SIGNATURE") ~= nil then
-		return "mango"
-	end
-	if noctalia.getenv("HYPRLAND_INSTANCE_SIGNATURE") ~= nil then
-		return "hyprland"
-	end
-	if noctalia.getenv("NIRI_SOCKET") ~= nil then
-		return "niri"
+
+	local host: any = getHost()
+	if host ~= nil and typeof(host.getenv) == "function" then
+		local getenv = host.getenv :: (string) -> string?
+		if getenv("MANGO_INSTANCE_SIGNATURE") ~= nil then
+			return "mango"
+		end
+		if getenv("HYPRLAND_INSTANCE_SIGNATURE") ~= nil then
+			return "hyprland"
+		end
+		if getenv("NIRI_SOCKET") ~= nil then
+			return "niri"
+		end
 	end
 	return "hyprland"
 end
 
-local function currentRequest(): BindingRequest
-	local comp = detectCompositor()
+function service.currentRequest(): BindingRequest
+	local comp = service.detectCompositor()
 	if comp == "mango" then
 		return {
 			compositor = comp,
@@ -969,7 +1052,7 @@ local function currentRequest(): BindingRequest
 	else
 		local mode = config.getString("hyprland_parser", "auto")
 		local luaPath = config.getString("hyprland_lua_config", "~/.config/hypr/hyprland.lua")
-		local useLua = mode == "lua" or (mode == "auto" and noctalia.fileExists(noctalia.expandPath(luaPath)))
+		local useLua = mode == "lua" or (mode == "auto" and filesystem.exists(luaPath))
 		local root = if useLua then luaPath else config.getString("hyprland_config", "~/.config/hypr/hyprland.conf")
 		return {
 			compositor = "hyprland",
@@ -979,7 +1062,7 @@ local function currentRequest(): BindingRequest
 	end
 end
 
-local function isCacheFresh(cached: CachePayload?, request: BindingRequest): boolean
+function service.isCacheFresh(cached: CachePayload?, request: BindingRequest): boolean
 	if not cached or cached.schema ~= CACHE_SCHEMA or typeof(cached.sources) ~= "table" then
 		return false
 	end
@@ -988,7 +1071,7 @@ local function isCacheFresh(cached: CachePayload?, request: BindingRequest): boo
 	end
 
 	for _, src in ipairs(cached.sources) do
-		local info, _ = noctalia.fileInfo(src.path)
+		local info, _ = filesystem.fileInfo(src.path)
 		if not info or info.mtime ~= src.mtime or info.size ~= src.size then
 			return false
 		end
@@ -998,10 +1081,8 @@ local function isCacheFresh(cached: CachePayload?, request: BindingRequest): boo
 end
 
 -- =============================================================================
--- Runtime State & Refresh Pipeline (Host Bound)
+-- Runtime Pipeline State
 -- =============================================================================
-
-local isInsideNoctalia = (noctalia :: any) ~= nil
 
 local defaultSnapshot: SnapshotState = {
 	schema = CACHE_SCHEMA,
@@ -1016,7 +1097,7 @@ local defaultSnapshot: SnapshotState = {
 	refreshing = true,
 }
 
-local snapshotChannel = if isInsideNoctalia then state.channel(SNAPSHOT_KEY, defaultSnapshot) else nil
+local snapshotChannel = state.channel(SNAPSHOT_KEY, defaultSnapshot)
 local refreshing = false
 local refreshQueued = false
 local refreshGeneration = 0
@@ -1029,9 +1110,6 @@ local function publish(
 	err: string?,
 	isRefreshing: boolean
 )
-	if not snapshotChannel then
-		return
-	end
 	snapshotChannel.set({
 		schema = CACHE_SCHEMA,
 		status = status,
@@ -1046,13 +1124,7 @@ local function publish(
 	})
 end
 
--- Forward Declarations
-local refresh: (BindingRequest?) -> ()
-local performRefresh: (number, BindingRequest) -> ()
-local refreshHyprLua: (number, BindingRequest) -> ()
-local finishRefresh: (number, BindingRequest, { BindingEntry }, { string }, string?, ParseContext?) -> ()
-
-finishRefresh = function(
+local function finishRefresh(
 	generation: number,
 	request: BindingRequest,
 	result: { BindingEntry },
@@ -1089,13 +1161,13 @@ finishRefresh = function(
 
 	if refreshQueued then
 		refreshQueued = false
-		refresh(request)
+		service.refresh(request)
 	end
 end
 
-refreshHyprLua = function(generation: number, request: BindingRequest)
-	if not noctalia.commandExists("hyprctl") then
-		finishRefresh(generation, request, {}, {}, noctalia.tr("hyprctl_missing"), nil)
+local function refreshHyprLua(generation: number, request: BindingRequest)
+	if not proc.exists("hyprctl") then
+		finishRefresh(generation, request, {}, {}, tr("hyprctl_missing", "hyprctl not found"), nil)
 		return
 	end
 
@@ -1104,7 +1176,14 @@ refreshHyprLua = function(generation: number, request: BindingRequest)
 			return
 		end
 		if err then
-			finishRefresh(generation, request, {}, {}, service.trim(err) or noctalia.tr("hyprctl_failed"), nil)
+			finishRefresh(
+				generation,
+				request,
+				{},
+				{},
+				service.trim(err) or tr("hyprctl_failed", "Failed to query hyprctl"),
+				nil
+			)
 			return
 		end
 
@@ -1116,6 +1195,7 @@ refreshHyprLua = function(generation: number, request: BindingRequest)
 			else {
 				warnings = { tostring(scanOrErr) },
 				exactRules = {},
+				patternRules = {},
 				bindings = {},
 				variables = {},
 				sources = {},
@@ -1133,40 +1213,40 @@ refreshHyprLua = function(generation: number, request: BindingRequest)
 	end)
 end
 
-performRefresh = function(generation: number, request: BindingRequest)
+local function performRefresh(generation: number, request: BindingRequest)
 	if request.parser == "mango" then
-		local context = walkConfig(request.root, service.parseMangoContent, "%.conf$")
+		local context = service.walkConfig(request.root, service.parseMangoContent, "%.conf$")
 		finishRefresh(generation, request, context.bindings, context.warnings, nil, context)
 	elseif request.parser == "niri" then
-		local context = walkConfig(request.root, service.parseNiriContent, "%.kdl$")
+		local context = service.walkConfig(request.root, service.parseNiriContent, "%.kdl$")
 		finishRefresh(generation, request, context.bindings, context.warnings, nil, context)
 	elseif request.parser == "hypr-lua" then
 		refreshHyprLua(generation, request)
 	elseif request.parser == "hypr-conf" then
-		local context = walkConfig(request.root, service.parseHyprContent, "%.conf$")
+		local context = service.walkConfig(request.root, service.parseHyprContent, "%.conf$")
 		finishRefresh(generation, request, context.bindings, context.warnings, nil, context)
 	else
-		finishRefresh(generation, request, {}, {}, noctalia.tr("unsupported"), nil)
+		finishRefresh(generation, request, {}, {}, tr("unsupported", "Unsupported configuration parser"), nil)
 	end
 end
 
-refresh = function(request: BindingRequest?)
+function service.refresh(request: BindingRequest?)
 	if refreshing then
 		refreshQueued = true
 		return
 	end
-	local activeRequest = request or currentRequest()
+	local activeRequest = request or service.currentRequest()
 	refreshGeneration += 1
 	refreshing = true
 	performRefresh(refreshGeneration, activeRequest)
 end
 
-local function bootstrap()
+function service.bootstrap()
 	logger.syncFromConfig("log_level")
-	local request = currentRequest()
-	local cached: CachePayload?, _ = filesystem.readPluginData(BINDINGS_CACHE_FILE, nil :: CachePayload?)
+	local request = service.currentRequest()
+	local cached: CachePayload?, _ = filesystem.readPluginData(BINDINGS_CACHE_FILE)
 
-	if isCacheFresh(cached, request) then
+	if service.isCacheFresh(cached, request) then
 		lastGood = cached
 		publish("ready", request, cached, "", false)
 		log.debug("Restored keybind cache from disk", { count = #(cached :: CachePayload).bindings })
@@ -1177,55 +1257,44 @@ local function bootstrap()
 		else
 			publish("loading", request, nil, "", true)
 		end
-		refresh(request)
+		service.refresh(request)
 	end
 end
 
 -- =============================================================================
--- Lifecycle Registration
+-- Entrypoint Registration & Startup
 -- =============================================================================
 
-if isInsideNoctalia then
-	lifecycle.service(
-		getfenv(),
-		{
-			onEnable = function()
-				bootstrap()
-			end,
-			onConfigChanged = function()
-				local request = currentRequest()
-				refresh(request)
-			end,
-			onIpc = function(event: string, payload: string)
-				if event == "refresh" or event == "reload" then
-					refresh()
-				end
-			end,
-			onExit = function(_signal, _reason)
-				refreshGeneration += 1
-				refreshing = false
-				refreshQueued = false
-			end,
-		} :: lifecycle.ServiceLifecycle
-	)
+lifecycle.service(getfenv(), {
+	onEnable = function()
+		service.bootstrap()
+	end,
+	onConfigChanged = function()
+		service.bootstrap()
+	end,
+	onIpc = function(event: string, _payload: string)
+		if event == "refresh" or event == "reload" then
+			service.refresh()
+		end
+	end,
+	onExit = function(_signal, _reason)
+		refreshGeneration += 1
+		refreshing = false
+		refreshQueued = false
+	end,
+})
 
-	noctalia.state.watch(REFRESH_REQUEST_KEY, function(_request: any)
-		refresh()
+-- Watch state for external refresh requests (e.g. from panel/widget IPC)
+local host: any = getHost()
+if host ~= nil and host.state ~= nil and typeof(host.state.watch) == "function" then
+	(host.state.watch :: (string, (any) -> ()) -> ())(REFRESH_REQUEST_KEY, function(_req: any)
+		service.refresh()
 	end)
-
-	bootstrap()
 end
 
--- Diagnostic check
-local env: { [string]: any } = if typeof(getfenv) == "function" then getfenv() :: any else {}
-
-noctalia.log(
-	string.format(
-		"[DIAG-BIND] onIpc in env: %s | onEnable in env: %s | onIpc in _G: %s",
-		tostring(typeof(env.onIpc) == "function"),
-		tostring(typeof(env.onEnable) == "function"),
-		tostring(typeof((_G :: any).onIpc) == "function")
-	)
-)
+-- Automatic startup bootstrap when evaluating inside a live host
+if host ~= nil then
+	service.bootstrap()
+end
 
 return service
