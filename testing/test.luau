@@ -56,7 +56,7 @@ local function cyan(text: string): string
 end
 
 local function magenta(text: string): string
-	return stdio.color("magenta") .. text .. stdio.color("reset")
+	return stdio.color("purple") .. text .. stdio.color("reset")
 end
 
 -- =============================================================================
