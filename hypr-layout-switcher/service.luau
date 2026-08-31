@@ -6,7 +6,6 @@ local constants = require("./constants.luau")
 local types = require("./types.luau")
 local log = stl.log.scope("HyprTopologyService")
 
-type MonitorSlice = types.MonitorSlice
 type TopologyState = types.TopologyState
 
 local NEXT_LAYOUT = {

@@ -1,4 +1,4 @@
---!nonstrict
+--!strict
 -- Declarative Bar Widget: Screen-Isolated Topology Subscriber
 
 local stl = require("../stl/stl.luau")
@@ -29,7 +29,6 @@ local LABELS: { [string]: string } = {
 	scrolling = "SCR",
 }
 
-local uiNode: any = ui
 local topologyChannel = stl.state.channel(
 	constants.TOPOLOGY_KEY,
 	{
@@ -62,8 +61,8 @@ end
 currentLayout = extractMyLayout(topologyChannel.get())
 
 local function render()
-	local isVert = barWidget.isVertical and barWidget.isVertical() or false
-	local container = if isVert then uiNode.column else uiNode.row
+	local isVert = if barWidget.isVertical then barWidget.isVertical() else false
+	local container: (UiFlexProps, { UiNode }?) -> UiNode = if isVert then ui.column else ui.row
 
 	barWidget.render(container({
 		gap = 5,
@@ -71,12 +70,12 @@ local function render()
 		paddingH = 6,
 		paddingV = 2,
 	}, {
-		uiNode.glyph({
+		ui.glyph({
 			name = GLYPHS[currentLayout] or "layout-grid",
 			size = 14,
 			color = "primary",
 		}),
-		uiNode.row({
+		ui.row({
 			fill = "primary/0.18",
 			radius = 6,
 			minWidth = 36,
@@ -85,8 +84,8 @@ local function render()
 			justify = "center",
 			paddingH = 4,
 		}, {
-			uiNode.label({
-				text = LABELS[currentLayout] or currentLayout:sub(1, 3):upper(),
+			ui.label({
+				text = LABELS[currentLayout] or string.upper(currentLayout:sub(1, 3)),
 				color = "primary",
 				fontWeight = "bold",
 				fontSize = 11,
