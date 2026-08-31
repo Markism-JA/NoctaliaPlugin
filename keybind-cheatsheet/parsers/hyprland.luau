@@ -23,29 +23,6 @@ local HYPR_MOD_FLAGS: { { mask: number, name: string } } = {
 	{ mask = 128, name = "MOD5" },
 }
 
-local customJsonDecoder: JsonDecodeFn? = nil
-
-function hyprland.__setJsonDecoder(decoder: JsonDecodeFn?)
-	customJsonDecoder = decoder
-end
-
-local function getHost(): any
-	return (_G :: any).noctalia or (getfenv() :: any).noctalia
-end
-
-local function resolveJsonDecoder(): JsonDecodeFn?
-	if customJsonDecoder ~= nil then
-		return customJsonDecoder
-	end
-
-	local host = getHost()
-	if host and typeof(host.json) == "table" and typeof(host.json.decode) == "function" then
-		return host.json.decode :: JsonDecodeFn
-	end
-
-	return nil
-end
-
 --- Scans raw .conf line syntax for Hyprland
 function hyprland.parseConfContent(content: string, sourceFile: string, context: ParseContext)
 	local currentSection = "General"
@@ -223,14 +200,8 @@ function hyprland.scanHyprLua(rootPath: string): ParseContext
 	return context
 end
 
---- Synchronously parses hyprctl JSON output with high-performance ScanRule matching
 function hyprland.parseHyprJson(raw: string, scanContext: ParseContext): ({ BindingEntry }?, string?)
-	local jsonDecoder = resolveJsonDecoder()
-	if not jsonDecoder then
-		return nil, "No JSON decoder available"
-	end
-
-	local decoded: { { [string]: any } }?, err = jsonDecoder(raw)
+	local decoded: { { [string]: any } }?, err = stl.codec.jsonDecode(raw)
 	if typeof(decoded) ~= "table" or not decoded then
 		return nil, err or "Invalid hyprctl JSON"
 	end

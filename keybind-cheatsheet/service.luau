@@ -5,6 +5,7 @@ local lifecycle = require("../stl/lifecycle.luau")
 local stl = require("../stl/stl.luau")
 local config = stl.config
 local filesystem = stl.filesystem
+local hostBridge = require("../stl/host.luau")
 local log = stl.log.scope("KeybindService")
 local proc = stl.proc
 local state = stl.state
@@ -27,7 +28,6 @@ local service = {}
 -- Export parser methods directly for spec tests & external callers
 service.parseHyprJson = hyprlandParser.parseHyprJson
 service.scanHyprLua = hyprlandParser.scanHyprLua
-service.__setJsonDecoder = hyprlandParser.__setJsonDecoder
 
 -- =============================================================================
 -- State & Configuration Channels
@@ -61,6 +61,8 @@ local defaultSnapshot: SnapshotState = {
 }
 
 local snapshotChannel = state.channel(SNAPSHOT_KEY, defaultSnapshot)
+local refreshRequestChannel = state.channel(REFRESH_REQUEST_KEY, 0)
+
 local refreshing = false
 local refreshQueued = false
 local refreshGeneration = 0
@@ -70,14 +72,10 @@ local lastGood: CachePayload? = nil
 -- Helpers & Detection
 -- =============================================================================
 
-local function getHost(): any
-	return (_G :: any).noctalia or (getfenv() :: any).noctalia
-end
-
 local function tr(key: string, default: string?): string
-	local host: any = getHost()
+	local host = hostBridge.get()
 	if host ~= nil and typeof(host.tr) == "function" then
-		return (host.tr :: (string) -> string?)(key) or (default or key)
+		return host.tr(key) or (default or key)
 	end
 	return default or key
 end
@@ -88,16 +86,15 @@ function service.detectCompositor(): Compositor
 		return forced
 	end
 
-	local host: any = getHost()
+	local host = hostBridge.get()
 	if host ~= nil and typeof(host.getenv) == "function" then
-		local getenv = host.getenv :: (string) -> string?
-		if getenv("MANGO_INSTANCE_SIGNATURE") ~= nil then
+		if host.getenv("MANGO_INSTANCE_SIGNATURE") ~= nil then
 			return "mango"
 		end
-		if getenv("HYPRLAND_INSTANCE_SIGNATURE") ~= nil then
+		if host.getenv("HYPRLAND_INSTANCE_SIGNATURE") ~= nil then
 			return "hyprland"
 		end
-		if getenv("NIRI_SOCKET") ~= nil then
+		if host.getenv("NIRI_SOCKET") ~= nil then
 			return "niri"
 		end
 	end
@@ -282,60 +279,50 @@ local function refreshHyprLua(generation: number, request: BindingRequest)
 		return
 	end
 
+	-- 1. Scan config files on disk in the CURRENT invocation tick (before async command dispatch)
+	local scanOk, scanOrErr = pcall(function()
+		return hyprlandParser.scanHyprLua(request.root)
+	end)
+	local scan: ParseContext = if scanOk and typeof(scanOrErr) == "table"
+		then scanOrErr :: ParseContext
+		else {
+			warnings = { tostring(scanOrErr) },
+			exactRules = {},
+			patternRules = {},
+			bindings = {},
+			variables = {},
+			sources = {},
+		}
+
+	if generation ~= refreshGeneration then
+		return
+	end
+
+	-- 2. Dispatch hyprctl asynchronously; callback tick ONLY does JSON decode & rule assignment
 	proc.exec({ "hyprctl", "binds", "-j" }, function(err, stdout, _exitCode)
 		if generation ~= refreshGeneration then
 			return
 		end
 		if err then
-			finishRefresh(generation, request, {}, {}, err or tr("hyprctl_failed", "Failed to query hyprctl"), nil)
+			finishRefresh(
+				generation,
+				request,
+				{},
+				scan.warnings,
+				err or tr("hyprctl_failed", "Failed to query hyprctl"),
+				scan
+			)
 			return
 		end
 
-		-- Yield immediately out of the async command callback
-		-- to get a clean VM instruction budget tick
-		local host = getHost()
-		local defer = if host
-				and host.timer
-				and typeof(host.timer.defer) == "function"
-			then host.timer.defer :: (() -> ()) -> ()
-			else nil
+		local parseOk, parsedOrErr = pcall(function()
+			return hyprlandParser.parseHyprJson(stdout, scan)
+		end)
 
-		local function executePipeline()
-			if generation ~= refreshGeneration then
-				return
-			end
-
-			-- Scan config files on disk
-			local scanOk, scanOrErr = pcall(function()
-				return hyprlandParser.scanHyprLua(request.root)
-			end)
-			local scan: ParseContext = if scanOk and typeof(scanOrErr) == "table"
-				then scanOrErr :: ParseContext
-				else {
-					warnings = { tostring(scanOrErr) },
-					exactRules = {},
-					patternRules = {},
-					bindings = {},
-					variables = {},
-					sources = {},
-				}
-
-			-- Decode and parse JSON bindings
-			local parseOk, parsedOrErr = pcall(function()
-				return hyprlandParser.parseHyprJson(stdout, scan)
-			end)
-
-			if parseOk and parsedOrErr then
-				finishRefresh(generation, request, parsedOrErr :: { BindingEntry }, scan.warnings, nil, scan)
-			else
-				finishRefresh(generation, request, {}, scan.warnings, tostring(parsedOrErr), scan)
-			end
-		end
-
-		if defer then
-			defer(executePipeline)
+		if parseOk and parsedOrErr then
+			finishRefresh(generation, request, parsedOrErr :: { BindingEntry }, scan.warnings, nil, scan)
 		else
-			executePipeline()
+			finishRefresh(generation, request, {}, scan.warnings, tostring(parsedOrErr), scan)
 		end
 	end, { trimOutput = false })
 end
@@ -388,8 +375,7 @@ function service.bootstrap()
 end
 
 -- =============================================================================
--- Lifecycle Hooks
--- =============================================================================
+-- Lifecycle Hooks & State Subscriptions
 
 lifecycle.service(getfenv(), {
 	onEnable = function()
@@ -413,17 +399,14 @@ lifecycle.service(getfenv(), {
 })
 
 -- Watch state for external refresh requests (e.g. from panel/widget IPC)
-local host: any = getHost()
-if host ~= nil and host.state ~= nil and typeof(host.state.watch) == "function" then
-	(host.state.watch :: (string, (any) -> ()) -> ())(REFRESH_REQUEST_KEY, function(_req: any)
-		pcall(function()
-			service.refresh(nil)
-		end)
+refreshRequestChannel.watch(function(_req: any)
+	pcall(function()
+		service.refresh(nil)
 	end)
-end
+end)
 
--- Automatic startup bootstrap when evaluating inside a live host
-if host ~= nil then
+-- Automatic startup bootstrap when evaluating inside an active host
+if hostBridge.get() ~= nil then
 	service.bootstrap()
 end
 

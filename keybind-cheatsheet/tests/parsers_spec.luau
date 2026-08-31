@@ -22,6 +22,14 @@ local function createContext(): ParseContext
 end
 
 testing.suite("Keybind Cheatsheet: Parsers", function(b)
+	b.beforeEach(function()
+		testing.bootstrap(28)
+	end)
+
+	b.afterEach(function()
+		testing.teardown()
+	end)
+
 	-- =========================================================================
 	-- Common Parser & Text Transforms
 	-- =========================================================================
@@ -156,35 +164,34 @@ Mod+Left { focus-column-left; }
 	-- =========================================================================
 
 	b.test("hyprland.parseHyprJson decodes bitmask modifiers and assigns categories", function()
-		hyprland.__setJsonDecoder(function(_raw)
-			return {
-				{
-					modmask = 65, -- SUPER (64) + SHIFT (1)
-					key = "Return",
-					dispatcher = "exec",
-					arg = "kitty",
-					description = "Terminal",
-					has_description = true,
-				},
-				{
-					modmask = 64,
-					key = "d",
-					dispatcher = "exec",
-					arg = "rofi -show drun",
-					description = "",
-					has_description = false,
-				},
-				{
-					modmask = 64,
-					key = "1",
-					dispatcher = "workspace",
-					arg = "1",
-					description = "Move Window to Workspace 1 (Follow)",
-					has_description = true,
-				},
-			},
-				nil
-		end)
+		local rawJson = [[
+        [
+            {
+                "modmask": 65,
+                "key": "Return",
+                "dispatcher": "exec",
+                "arg": "kitty",
+                "description": "Terminal",
+                "has_description": true
+            },
+            {
+                "modmask": 64,
+                "key": "d",
+                "dispatcher": "exec",
+                "arg": "rofi -show drun",
+                "description": "",
+                "has_description": false
+            },
+            {
+                "modmask": 64,
+                "key": "1",
+                "dispatcher": "workspace",
+                "arg": "1",
+                "description": "Move Window to Workspace 1 (Follow)",
+                "has_description": true
+            }
+        ]
+        ]]
 
 		local scanCtx = createContext()
 		scanCtx.exactRules["Terminal"] = {
@@ -199,7 +206,8 @@ Mod+Left { focus-column-left; }
 			category = "Workspaces & Scratchpads • Workspaces 1-10",
 		})
 
-		local result, err = hyprland.parseHyprJson("[]", scanCtx)
+		-- Directly invoke parseHyprJson with the real JSON string payload
+		local result, err = hyprland.parseHyprJson(rawJson, scanCtx)
 		testing.assert.isNil(err)
 		testing.assert.truthy(result ~= nil)
 
@@ -216,8 +224,6 @@ Mod+Left { focus-column-left; }
 			testing.assert.equal(result[3].subsection, "Workspaces 1-10")
 			testing.assert.equal(result[3].category, "Workspaces & Scratchpads • Workspaces 1-10")
 		end
-
-		hyprland.__setJsonDecoder(nil)
 	end)
 end)
 
