@@ -6,7 +6,7 @@ local stl = require("../../stl/stl.luau")
 local constants = require("../../keybind-cheatsheet/constants.luau")
 local service = require("../../keybind-cheatsheet/service.luau")
 
-testing.suite("Keybind Service Pipeline", function(b)
+testing.suite("Keybind Cheatsheet: Service Pipeline", function(b)
 	local mockHost: testing.MockHost
 	local virtualFiles: { [string]: { content: string, size: number, mtime: number } }
 

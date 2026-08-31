@@ -5,7 +5,7 @@ local testing = require("../../testing/testing.luau")
 local stl = require("../../stl/stl.luau")
 local constants = require("../constants.luau")
 
-testing.suite("Widget - Bar Entrypoint", function(b)
+testing.suite("Keybind Cheatsheet: Bar Entrypoint", function(b)
 	local mockHost: testing.MockHost
 	local panelToggled: { string }
 	local glyphSet: string?

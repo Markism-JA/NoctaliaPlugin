@@ -5,7 +5,7 @@ local testing = require("../../testing/testing.luau")
 local stl = require("../../stl/stl.luau")
 local constants = require("../constants.luau")
 
-testing.suite("Keybinds Panel View", function(b)
+testing.suite("Keybind Cheatsheet: Panel View", function(b)
 	local mockHost: testing.MockHost
 	local renderedTrees: { any }
 	local panelClosedCount: number

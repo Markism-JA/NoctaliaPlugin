@@ -21,7 +21,7 @@ local function createContext(): ParseContext
 	}
 end
 
-testing.suite("Keybind Format Parsers", function(b)
+testing.suite("Keybind Cheatsheet: Parsers", function(b)
 	-- =========================================================================
 	-- Common Parser & Text Transforms
 	-- =========================================================================

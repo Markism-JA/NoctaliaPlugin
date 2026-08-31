@@ -9,7 +9,7 @@ type BindingRequest = types.BindingRequest
 type CachePayload = types.CachePayload
 type FileInfo = testing.FileInfo
 
-testing.suite("Keybind Cache Validation", function(b)
+testing.suite("Keybind Cheatsheet: Cache Validation", function(b)
 	local mockHost: testing.MockHost
 	local virtualFiles: { [string]: { content: string, size: number, mtime: number } }
 
