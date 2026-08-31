@@ -29,6 +29,36 @@
 --- ```
 local test = {}
 
+local stdio = require("@lune/stdio")
+
+-- =============================================================================
+-- Terminal ANSI Styling Helpers
+-- =============================================================================
+
+local function bold(text: string): string
+	return stdio.style("bold") .. text .. stdio.style("reset")
+end
+
+local function dim(text: string): string
+	return stdio.style("dim") .. text .. stdio.style("reset")
+end
+
+local function green(text: string): string
+	return stdio.color("green") .. text .. stdio.color("reset")
+end
+
+local function red(text: string): string
+	return stdio.color("red") .. text .. stdio.color("reset")
+end
+
+local function cyan(text: string): string
+	return stdio.color("cyan") .. text .. stdio.color("reset")
+end
+
+local function magenta(text: string): string
+	return stdio.color("magenta") .. text .. stdio.color("reset")
+end
+
 -- =============================================================================
 -- Types & Contracts
 -- =============================================================================
@@ -491,12 +521,12 @@ function test.run(): (number, number)
 	local failed = 0
 	local startTime = os.clock()
 
-	print("\n============================================================")
-	print(" NOCTALIA TEST RUNNER")
-	print("============================================================")
+	print(cyan("\n============================================================"))
+	print(bold(cyan(" NOCTALIA TEST RUNNER")))
+	print(cyan("============================================================"))
 
 	for _, suite in ipairs(suites) do
-		print(string.format("\n[Suite] %s", suite.name))
+		print(string.format("\n%s %s", bold(magenta("[Suite]")), bold(suite.name)))
 		for _, tc in ipairs(suite.cases) do
 			local testFailed = false
 			local failureReason = ""
@@ -527,18 +557,24 @@ function test.run(): (number, number)
 
 			if testFailed then
 				failed += 1
-				print(string.format("  ✖ [FAIL] %s\n    └─ %s", tc.name, failureReason))
+				print(
+					string.format("  %s %s\n    └─ %s", bold(red("✗ [FAIL]")), bold(tc.name), red(failureReason))
+				)
 			else
 				passed += 1
-				print(string.format("  ✔ [PASS] %s", tc.name))
+				print(string.format("  %s %s", bold(green("✓ [PASS]")), dim(tc.name)))
 			end
 		end
 	end
 
 	local durationMs = (os.clock() - startTime) * 1000
-	print("\n------------------------------------------------------------")
-	print(string.format(" RESULTS: %d Passed, %d Failed (%.2f ms)", passed, failed, durationMs))
-	print("============================================================\n")
+	print(dim("\n------------------------------------------------------------"))
+	if failed == 0 then
+		print(bold(green(string.format(" RESULTS: %d Passed, %d Failed (%.2f ms)", passed, failed, durationMs))))
+	else
+		print(bold(red(string.format(" RESULTS: %d Passed, %d Failed (%.2f ms)", passed, failed, durationMs))))
+	end
+	print(cyan("============================================================\n"))
 
 	return passed, failed
 end

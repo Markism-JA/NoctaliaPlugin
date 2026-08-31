@@ -4,9 +4,46 @@
 local fs = require("@lune/fs")
 local luau = require("@lune/luau")
 local process = require("@lune/process")
+local stdio = require("@lune/stdio")
 
 local nativeRequire = require
 local moduleCache: { [string]: any } = {}
+
+-- =============================================================================
+-- Terminal ANSI Styling Helpers
+-- =============================================================================
+
+local function colorize(style: string, color: string, text: string): string
+	return stdio.style(style :: any)
+		.. stdio.color(color :: any)
+		.. text
+		.. stdio.style("reset")
+		.. stdio.color("reset")
+end
+
+local function bold(text: string): string
+	return stdio.style("bold") .. text .. stdio.style("reset")
+end
+
+local function dim(text: string): string
+	return stdio.style("dim") .. text .. stdio.style("reset")
+end
+
+local function red(text: string): string
+	return stdio.color("red") .. text .. stdio.color("reset")
+end
+
+local function yellow(text: string): string
+	return stdio.color("yellow") .. text .. stdio.color("reset")
+end
+
+local function cyan(text: string): string
+	return stdio.color("cyan") .. text .. stdio.color("reset")
+end
+
+local function magenta(text: string): string
+	return stdio.color("purple") .. text .. stdio.color("reset")
+end
 
 -- Export cache clearing helper for test isolation
 local function clearModuleCache(prefix: string?)
@@ -69,22 +106,39 @@ local function parseCliArgs(args: { string }): CliConfig
 end
 
 local function printHelp()
-	print([[
-Noctalia CLI Test Runner
+	print(
+		string.format(
+			[[
+%s
 
-Usage:
+%s
   lune run test_cli [options] [path ...]
 
-Arguments:
-  path                  Optional spec file(s) or directories to execute.
+%s
+  %s                   Optional spec file(s) or directories to execute.
                         Defaults to discovering all '*_spec.luau' files.
 
-Options:
-  -f, --filter <str>    Filter test suites and test cases by name.
-  -q, --quiet           Silence non-test logging (stdout error traces).
-  -x, --fail-fast       Abort execution on the first encountered test failure.
-  -h, --help            Show this help dialog.
-]])
+%s
+  %s, %s   Filter test suites and test cases by name.
+  %s, %s            Silence non-test logging (stdout error traces).
+  %s, %s        Abort execution on the first encountered test failure.
+  %s, %s           Show this help dialog.
+]],
+			bold(cyan("Noctalia CLI Test Runner")),
+			bold("Usage:"),
+			bold("Arguments:"),
+			magenta("path"),
+			bold("Options:"),
+			yellow("-f"),
+			yellow("--filter <str>"),
+			yellow("-q"),
+			yellow("--quiet"),
+			yellow("-x"),
+			yellow("--fail-fast"),
+			yellow("-h"),
+			yellow("--help")
+		)
+	)
 end
 
 -- =============================================================================
@@ -157,7 +211,15 @@ local function virtualRequire(currentDir: string, importPath: string, runnerConf
 	end
 
 	if not fs.isFile(targetPath) then
-		error(string.format("Module not found: '%s' (resolved to '%s')", importPath, targetPath), 2)
+		error(
+			string.format(
+				"%s: '%s' %s",
+				red("Module not found"),
+				importPath,
+				dim(string.format("(resolved to '%s')", targetPath))
+			),
+			2
+		)
 	end
 
 	local source = fs.readFile(targetPath)
@@ -232,16 +294,25 @@ else
 				table.insert(specFiles, spec)
 			end
 		else
-			print(string.format("[WARN] Target not found: %s", target))
+			print(string.format("%s Target not found: %s", colorize("bold", "yellow", " WARN "), cyan(target)))
 			process.exit(1)
 		end
 	end
 end
 
 if #specFiles == 0 then
-	print("[ERROR] No matching test specification (*_spec.luau) files found.")
+	print(
+		string.format(
+			"%s No matching test specification (*_spec.luau) files found.",
+			colorize("bold", "red", " ERROR ")
+		)
+	)
 	process.exit(1)
 end
+
+print(
+	string.format("\n%s Discovered %s test suite files", colorize("bold", "cyan", " RUNS "), bold(tostring(#specFiles)))
+)
 
 local testing: any = virtualRequire(".", "testing/testing.luau", config)
 
@@ -269,7 +340,12 @@ if typeof(runFn) ~= "function" and typeof(testing.test) == "table" then
 end
 
 if typeof(runFn) ~= "function" then
-	print("[ERROR] Could not find test runner function 'test.run()' in testing.luau")
+	print(
+		string.format(
+			"%s Could not find test runner function 'test.run()' in testing.luau",
+			colorize("bold", "red", " ERROR ")
+		)
+	)
 	process.exit(1)
 end
 
