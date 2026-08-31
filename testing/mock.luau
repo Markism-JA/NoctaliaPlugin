@@ -22,6 +22,7 @@
 --- rawG.noctalia = host
 --- ```
 
+local hostBridge = require("../stl/host.luau")
 local apiMatrix = require("../stl/api_matrix.luau")
 
 -- =============================================================================
@@ -87,7 +88,7 @@ export type MockState = {
 	clear: () -> (),
 }
 
---- Emulated audio runtime interface (available when `pluginApiLevel >= 20`).
+--- Emulated audio runtime interface.
 export type MockSound = {
 	--- Simulates loading an audio asset into the sound bank.
 	---
@@ -120,12 +121,9 @@ export type MockJson = {
 	encode: (val: any) -> (string, string?),
 }
 
---- Primary mock host interface mimicking the native global `noctalia` bridge.
-export type MockHost = {
-	--- Active simulated host API level (3 through 28).
-	pluginApiLevel: number,
-
-	--- In-memory state channel namespace.
+--- Primary mock host interface inheriting native `typeof(noctalia)` capabilities
+--- with dedicated test harness control mutators.
+export type MockHost = hostBridge.HostBridge & {
 	state: MockState,
 
 	--- Resolves configuration settings by key identifier (consumed by `stl.config`).
@@ -164,60 +162,7 @@ export type MockHost = {
 	---
 	--- @param handler ExecHandler Callback returning simulated exit codes and outputs.
 	setExecHandler: (handler: ExecHandler) -> (),
-
-	--- Retrieves an environment variable from the simulated host environment.
-	---
-	--- @param name string Environment variable key name.
-	--- @return string? The variable value, or `nil` if unset.
-	getenv: (name: string) -> string?,
-
-	--- Resolves leading tilde (`~`) prefixes to the simulated user home directory.
-	---
-	--- @param path string File path containing potential leading `~`.
-	--- @return string Fully expanded absolute path.
-	expandPath: (path: string) -> string,
-
-	--- Checks whether a path exists in the simulated filesystem.
-	---
-	--- @param path string Target file or directory path.
-	--- @return boolean True if the path exists.
-	fileExists: (path: string) -> boolean,
-
-	--- Retrieves metadata attributes for a simulated file path.
-	---
-	--- @param path string Target file path.
-	--- @return FileInfo? info Metadata attributes table on success.
-	--- @return string? err Error message if file does not exist.
-	fileInfo: (path: string) -> (FileInfo?, string?),
-
-	--- Lists entry names within a simulated directory.
-	---
-	--- @param path string Target directory path.
-	--- @return { string }? entries Array of contained filenames.
-	--- @return string? err Error message if directory cannot be read.
-	listDir: (path: string) -> ({ string }?, string?),
-
-	--- Returns localized translations for UI keys.
-	---
-	--- @param key string Localization dictionary key.
-	--- @return string Localized translation string.
-	tr: (key: string) -> string,
-
-	--- Pure JSON serialization and deserialization namespace.
-	json: MockJson,
-
-	--- Sound runtime interface (set to `nil` when `pluginApiLevel < 20`).
-	sound: MockSound?,
-
-	--- TOML configuration getter (set to `nil` when `pluginApiLevel < 26`).
-	getSetting: ((path: string) -> any)?,
-
-	--- High-resolution wall-clock millisecond resolver (set to `nil` when `pluginApiLevel < 12`).
-	nowMs: (() -> number)?,
-
-	--- Updates the active simulated API level, adding or stripping tier-gated methods dynamically.
-	---
-	--- @param level number Target API level (3 through 28).
+	setVirtualFile: (path: string, content: string) -> (),
 	setApiLevel: (level: number) -> (),
 
 	--- Restores initial API level, clears state channels and configurations, and resets execution handlers.
@@ -255,6 +200,7 @@ local mock = {}
 function mock.create(initialApiLevel: number?): MockHost
 	local store: { [string]: any } = {}
 	local configStore: { [string]: any } = {}
+	local virtualFiles: { [string]: string } = {}
 	local watchers: { [string]: { (val: any) -> () } } = {}
 	local envVars: { [string]: string } = { HOME = "/home/user" }
 	local execHandler: ExecHandler? = nil
@@ -298,37 +244,24 @@ function mock.create(initialApiLevel: number?): MockHost
 		end,
 	}
 
-	local currentSound: MockSound? = defaultSound
-	local currentGetSetting: ((path: string) -> any)? = defaultGetSetting
-	local currentNowMs: (() -> number)? = defaultNowMs
-
-	local host: MockHost
-	local rawHost: { [string]: any }
+	local hostTable: { [string]: any }
 
 	local function applyApiLevel(level: number)
 		activeLevel = level
-		rawHost.pluginApiLevel = level
-
-		if level < 26 then
-			rawHost.getSetting = nil
-		else
-			rawHost.getSetting = defaultGetSetting
-		end
-
-		if level < 20 then
-			rawHost.sound = nil
-		else
-			rawHost.sound = defaultSound
-		end
-
-		if level < 12 then
-			rawHost.nowMs = nil
-		else
-			rawHost.nowMs = defaultNowMs
-		end
+		hostTable.pluginApiLevel = level
+		hostTable.getSetting = if level >= 26 then defaultGetSetting else nil
+		hostTable.sound = if level >= 20 then defaultSound else nil
+		hostTable.nowMs = if level >= 12 then defaultNowMs else nil
 	end
 
-	host = {
+	local function normalizeVirtualPath(path: string): string
+		if string.sub(path, 1, 1) == "~" then
+			return (envVars.HOME or "/home/user") .. string.sub(path, 2)
+		end
+		return path
+	end
+
+	hostTable = {
 		pluginApiLevel = activeLevel,
 		state = stateObj,
 
@@ -379,17 +312,24 @@ function mock.create(initialApiLevel: number?): MockHost
 		end,
 
 		expandPath = function(path: string): string
-			if string.sub(path, 1, 1) == "~" then
-				return (envVars.HOME or "/home/user") .. string.sub(path, 2)
+			return normalizeVirtualPath(path)
+		end,
+
+		fileExists = function(path: string): boolean
+			local resolved = normalizeVirtualPath(path)
+			return virtualFiles[resolved] ~= nil
+		end,
+
+		fileInfo = function(path: string): (FileInfo?, string?)
+			local resolved = normalizeVirtualPath(path)
+			local content = virtualFiles[resolved]
+			if content ~= nil then
+				return {
+					size = #content,
+					mtime = 1700000000,
+					isDir = false,
+				}, nil
 			end
-			return path
-		end,
-
-		fileExists = function(_path: string): boolean
-			return true
-		end,
-
-		fileInfo = function(_path: string): (FileInfo?, string?)
 			return {
 				size = 1024,
 				mtime = 1700000000,
@@ -401,46 +341,76 @@ function mock.create(initialApiLevel: number?): MockHost
 			return {}, nil
 		end,
 
+		readFile = function(path: string): (string?, string?)
+			local resolved = normalizeVirtualPath(path)
+			local content = virtualFiles[resolved]
+			if content ~= nil then
+				return content, nil
+			end
+			return nil, "File not found: " .. path
+		end,
+
+		writeFile = function(path: string, content: string): (boolean, string?)
+			local resolved = normalizeVirtualPath(path)
+			virtualFiles[resolved] = content
+			return true, nil
+		end,
+
+		mkdirAll = function(_path: string): (boolean, string?)
+			return true, nil
+		end,
+
+		pluginDataDir = function(): (string?, string?)
+			return "/home/user/.local/share/noctalia/plugins/mock-plugin", nil
+		end,
+
+		setVirtualFile = function(path: string, content: string)
+			local resolved = normalizeVirtualPath(path)
+			virtualFiles[resolved] = content
+		end,
+
+		log = function(_msg: string) end,
+
+		formatTime = function(_fmt: string): string
+			return os.date("%Y-%m-%d %H:%M:%S") :: string
+		end,
+
 		tr = function(key: string): string
 			return key
 		end,
 
 		json = {
 			decode = function(str: string): (any, string?)
-				if str == "" or str == "[]" then
-					return {}, nil
-				end
-				if str == "{}" then
+				if str == "" or str == "[]" or str == "{}" then
 					return {}, nil
 				end
 				return {}, nil
 			end,
-			encode = function(_val: any): (string, string?)
+			encode = function(_val: any, _pretty: boolean?): (string, string?)
 				return "{}", nil
 			end,
 		},
 
-		sound = currentSound,
-		getSetting = currentGetSetting,
-		nowMs = currentNowMs,
+		sound = defaultSound,
+		getSetting = defaultGetSetting,
+		nowMs = defaultNowMs,
 
 		setApiLevel = applyApiLevel,
 
 		reset = function()
 			stateObj.clear()
 			table.clear(configStore)
+			table.clear(virtualFiles)
 			execHandler = nil
 			applyApiLevel(initialApiLevel or apiMatrix.MAX_SUPPORTED_LEVEL)
 		end,
-	} :: MockHost
+	}
 
-	rawHost = host :: any
 	applyApiLevel(activeLevel)
 
-	return host
+	return (hostTable :: any) :: MockHost
 end
 
---- Alias for `mock.create` to maintain backwards compatibility.
 mock.createMockHost = mock.create
 
 return mock
