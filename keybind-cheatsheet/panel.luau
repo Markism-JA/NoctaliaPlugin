@@ -1,4 +1,4 @@
---!nonstrict
+--!strict
 -- Snapshot-driven keybind viewer for Mango, Hyprland, and Niri.
 --
 -- Parsing, durable cache ownership, and refreshes live in service.luau. This
@@ -9,77 +9,107 @@ local stl = require("../stl/stl.luau")
 local constants = require("./constants.luau")
 local log = stl.log.scope("KeybindsPanel")
 
-local noctalia = noctalia
-local ui = ui
-local panel = panel
+type ColorPreference = {
+	background: string?,
+	text: string?,
+}
+
+type Preferences = {
+	version: number,
+	hidden: { [string]: boolean },
+	descriptions: { [string]: string },
+	colors: { [string]: ColorPreference },
+}
+
+type Binding = {
+	id: string,
+	key: string,
+	modifiers: { string },
+	action: string,
+	category: string?,
+	description: string?,
+	compositor: string?,
+	displayIndex: number?,
+	_lowerMod: string?,
+	_keyRaw: string?,
+	_formattedKey: string?,
+	_lowerFormattedKey: string?,
+	_lowerAction: string?,
+}
+
+type Snapshot = {
+	bindings: { Binding }?,
+	warnings: { string }?,
+	compositor: string?,
+	status: string?,
+	error: string?,
+}
+
+type CategoryGroup = {
+	name: string,
+	bindings: { Binding },
+	sourceOrder: number,
+	order: number,
+	weight: number,
+}
+
+type ColorBucket = {
+	id: string,
+	label: string,
+	background: string,
+	text: string,
+	picker: string,
+}
 
 -- State channels
 local snapshotChannel = stl.state.channel(constants.SNAPSHOT_KEY, nil :: any)
 local refreshChannel = stl.state.channel(constants.REFRESH_REQUEST_KEY, 0)
 
-local bindings = {}
-local parseWarnings = {}
+local bindings: { Binding } = {}
+local parseWarnings: { string } = {}
 local currentCompositor = ""
 local loading = false
 local panelOpen = false
-local panelError = nil
-local refreshError = nil
-local snapshot = nil
+local panelError: string? = nil
+local refreshError: string? = nil
+local snapshot: Snapshot? = nil
 local query = ""
 local searchRevision = 0
 local searchFocused = true
-local view = "bindings"
-local editingId = nil
+local view: "bindings" | "edit" | "appearance" = "bindings"
+local editingId: string? = nil
 local editDraft = ""
-local preferences = { version = 1, hidden = {}, descriptions = {}, colors = {} }
+local preferences: Preferences = { version = 1, hidden = {}, descriptions = {}, colors = {} }
 
-local render
-local refresh
+local render: () -> ()
+local refresh: () -> ()
 
-local env = getfenv()
-local dynamicCallbacks = {}
-local callbackIndex = 0
-
-local function tr(key, values)
+local function tr(key: string, values: { [string]: any }?): string
 	if noctalia and noctalia.tr then
 		return noctalia.tr(key, values)
 	end
 	return key
 end
 
-local function trim(s)
+local function trim(s: string?): string
 	if not s or s == "" then
 		return ""
 	end
-	local from = s:match("^%s*()")
-	return from > #s and "" or s:match(".*%S", from)
+	if noctalia and noctalia.string and noctalia.string.trim then
+		return noctalia.string.trim(s)
+	end
+	return s:match("^%s*(.-)%s*$") or ""
 end
 
-local function lower(value)
+local function lower(value: string?): string
 	return string.lower(value or "")
 end
 
-local function startsWith(value, prefix)
+local function startsWith(value: string, prefix: string): boolean
 	return value:sub(1, #prefix) == prefix
 end
 
-local function resetCallbacks()
-	for _, name in ipairs(dynamicCallbacks) do
-		env[name] = nil
-	end
-	dynamicCallbacks = {}
-	callbackIndex = 0
-end
-
-local function callback(prefix, fn)
-	callbackIndex += 1
-	local name = "keybindCheatsheet_" .. prefix .. "_" .. callbackIndex
-	env[name] = fn
-	table.insert(dynamicCallbacks, name)
-	return name
-end
-
-local KEY_LABELS = {
+local KEY_LABELS: { [string]: string } = {
 	xf86audioraisevolume = "Vol Up",
 	xf86audiolowervolume = "Vol Down",
 	xf86audiomute = "Mute",
@@ -138,7 +168,7 @@ local MODIFIER_DISPLAY = {
 	MOD5 = "Mod5",
 }
 
-local function formatKey(key)
+local function formatKey(key: string?): string
 	if key == nil or key == "" then
 		return ""
 	end
@@ -150,10 +180,10 @@ local function formatKey(key)
 	if lowered ~= nil then
 		return lowered
 	end
-	return key:gsub("^mouse:", "Mouse ")
+	return (key:gsub("^mouse:", "Mouse "))
 end
 
-local function normalizePreferences(decoded)
+local function normalizePreferences(decoded: any): Preferences
 	local result = { version = 1, hidden = {}, descriptions = {}, colors = {} }
 	if type(decoded) ~= "table" then
 		return result
@@ -201,7 +231,7 @@ local function savePreferences()
 	end
 end
 
-local function enrichBinding(binding)
+local function enrichBinding(binding: Binding)
 	local mods = binding.modifiers or {}
 	binding._lowerMod = lower(table.concat(mods, " "))
 	binding._keyRaw = lower(binding.key or "")
@@ -210,7 +240,7 @@ local function enrichBinding(binding)
 	binding._lowerAction = lower(binding.action or "")
 end
 
-local function applySnapshot(value)
+local function applySnapshot(value: any)
 	snapshot = type(value) == "table" and value or nil
 	if snapshot == nil then
 		bindings = {}
@@ -272,16 +302,24 @@ for _, bucket in ipairs(COLOR_BUCKETS) do
 	COLOR_BY_ID[bucket.id] = bucket
 end
 
-local function colorValue(bucketId, property)
+local function colorValue(bucketId: string, property: "background" | "text"): string
 	local custom = preferences.colors[bucketId]
-	if custom ~= nil and custom[property] ~= nil then
-		return custom[property]
+	if property == "background" then
+		if custom and custom.background then
+			return custom.background
+		end
+		local bucket = COLOR_BY_ID[bucketId] or COLOR_BY_ID.default
+		return bucket.background
+	else
+		if custom and custom.text then
+			return custom.text
+		end
+		local bucket = COLOR_BY_ID[bucketId] or COLOR_BY_ID.default
+		return bucket.text
 	end
-	local bucket = COLOR_BY_ID[bucketId] or COLOR_BY_ID.default
-	return bucket[property]
 end
 
-local function bucketForKey(key)
+local function bucketForKey(key: string?): string
 	local value = lower(key)
 	if startsWith(value, "xf86") then
 		return "xf86"
@@ -298,7 +336,7 @@ local function bucketForKey(key)
 	return "default"
 end
 
-local function bucketForModifier(modifier)
+local function bucketForModifier(modifier: string): string
 	local value = lower(modifier)
 	if value == "super" or value == "mod4" or value == "logo" then
 		return "super"
@@ -322,14 +360,19 @@ local function isHexColor(value)
 	return value:match("^#%x%x%x%x%x%x$") ~= nil or value:match("^#%x%x%x%x%x%x%x%x$") ~= nil
 end
 
-local function setColor(bucketId, property, value)
-	preferences.colors[bucketId] = preferences.colors[bucketId] or {}
-	preferences.colors[bucketId][property] = value
+local function setColor(bucketId: string, property: "background" | "text", value: string)
+	local colorObj: ColorPreference = preferences.colors[bucketId] or { background = nil, text = nil }
+	if property == "background" then
+		colorObj.background = value
+	else
+		colorObj.text = value
+	end
+	preferences.colors[bucketId] = colorObj
 	savePreferences()
 	render()
 end
 
-local function chooseColor(bucketId, property)
+local function chooseColor(bucketId: string, property: "background" | "text")
 	local bucket = COLOR_BY_ID[bucketId] or COLOR_BY_ID.default
 	local current = colorValue(bucketId, property)
 	local initial = isHexColor(current) and current:sub(1, 7) or bucket.picker
@@ -342,7 +385,7 @@ local function chooseColor(bucketId, property)
 	end
 end
 
-local function pasteColor(bucketId, property)
+local function pasteColor(bucketId: string, property: "background" | "text")
 	local value = trim(noctalia.clipboardText and noctalia.clipboardText() or "")
 	if isHexColor(value) then
 		setColor(bucketId, property, string.upper(value))
@@ -353,7 +396,7 @@ local function pasteColor(bucketId, property)
 	end
 end
 
-local function keyPill(text, bucketId, key)
+local function keyPill(text: string, bucketId: string, key: string): UiNode
 	return ui.column({
 		key = key,
 		minWidth = 20,
@@ -367,18 +410,20 @@ local function keyPill(text, bucketId, key)
 	})
 end
 
-local function authoredDescription(binding)
+local function authoredDescription(binding: Binding): string
 	return preferences.descriptions[binding.id] or binding.description or ""
 end
 
-local function titleCase(value)
-	value = trim(value):gsub("[_%-]+", " ")
-	return (value:gsub("(%a)([%w']*)", function(first, rest)
-		return string.upper(first) .. lower(rest)
-	end))
+local function titleCase(value: string): string
+	local clean = (trim(value):gsub("[_%-]+", " "))
+	return (
+		clean:gsub("%a[%w']*", function(word: string): string
+			return string.upper(word:sub(1, 1)) .. lower(word:sub(2))
+		end)
+	)
 end
 
-local function friendlySpawn(commandLine)
+local function friendlySpawn(commandLine: string): string
 	local value = lower(trim(commandLine))
 	if value:find("noctalia msg panel-toggle launcher", 1, true) ~= nil then
 		return "Application Launcher"
@@ -413,7 +458,7 @@ local function friendlySpawn(commandLine)
 
 	local program = trim(commandLine):match("^([^%s]+)") or "Application"
 	program = program:match("([^/]+)$") or program
-	local programs = {
+	local programs: { [string]: string } = {
 		alacritty = "Terminal",
 		chromium = "Browser",
 		dolphin = "File Manager",
@@ -426,7 +471,7 @@ local function friendlySpawn(commandLine)
 	return programs[lower(program)] or ("Launch " .. titleCase(program))
 end
 
-local ACTION_LABELS = {
+local ACTION_LABELS: { [string]: string } = {
 	close_window = "Close Window",
 	killactive = "Close Window",
 	killclient = "Close Window",
@@ -446,7 +491,7 @@ local ACTION_LABELS = {
 	toggleoverview = "Workspace Overview",
 }
 
-local function friendlyAction(binding)
+local function friendlyAction(binding: Binding): string
 	local action = trim(binding.action)
 	local command, arguments = action:match("^(%S+)%s*(.*)$")
 	command = lower(command or ""):gsub("%-", "_")
@@ -502,19 +547,19 @@ local function friendlyAction(binding)
 	return titleCase(action)
 end
 
-local function effectiveDescription(binding)
+local function effectiveDescription(binding: Binding): string
 	local description = authoredDescription(binding)
 	return description ~= "" and description or friendlyAction(binding)
 end
 
-local function effectiveCategory(binding)
+local function effectiveCategory(binding: Binding): string
 	if binding.category ~= nil and binding.category ~= "" and binding.category ~= "General" then
 		return binding.category
 	end
 	return tr("other")
 end
 
-local SEARCH_MODIFIER_ALIASES = {
+local SEARCH_MODIFIER_ALIASES: { [string]: string } = {
 	win = "super",
 	logo = "super",
 	mod4 = "super",
@@ -523,7 +568,7 @@ local SEARCH_MODIFIER_ALIASES = {
 	mod1 = "alt",
 }
 
-local function splitQueryTokens(rawQuery)
+local function splitQueryTokens(rawQuery: string): { string }
 	local clean = lower(rawQuery):gsub("[%+%-%%,_|]+", " ")
 	local tokens = {}
 	for token in clean:gmatch("%S+") do
@@ -532,7 +577,7 @@ local function splitQueryTokens(rawQuery)
 	return tokens
 end
 
-local function bindingMatches(binding, tokens)
+local function bindingMatches(binding: Binding, tokens: { string }): boolean
 	if #tokens == 0 then
 		return true
 	end
@@ -570,7 +615,9 @@ local function bindingMatches(binding, tokens)
 	return true
 end
 
-local CATEGORY_PRIORITIES = {
+type CategoryPriorityEntry = { string | number } -- or struct table
+
+local CATEGORY_PRIORITIES: { { [number]: any } } = {
 	{ "applications", 10 },
 	{ "system", 20 },
 	{ "window management", 30 },
@@ -591,8 +638,8 @@ local CATEGORY_PRIORITIES = {
 	{ lower(tr("other")), 950 },
 }
 
-local categoryPriorityCache = {}
-local function categoryPriority(name)
+local categoryPriorityCache: { [string]: number } = {}
+local function categoryPriority(name: string): number
 	local cached = categoryPriorityCache[name]
 	if cached then
 		return cached
@@ -610,15 +657,20 @@ local function categoryPriority(name)
 	return score
 end
 
-local function bindingAvailableInView(hidden, undescribed, managing, showUndescribed)
+local function bindingAvailableInView(
+	hidden: boolean,
+	undescribed: boolean,
+	managing: boolean,
+	showUndescribed: boolean
+): boolean
 	if managing then
 		return true
 	end
 	return not hidden and (showUndescribed or not undescribed)
 end
 
-local function hiddenBindingCount(bindingList, hiddenPreferences)
-	local currentIds = {}
+local function hiddenBindingCount(bindingList: { Binding }, hiddenPreferences: { [string]: boolean }): number
+	local currentIds: { [string]: boolean } = {}
 	for _, binding in ipairs(bindingList or {}) do
 		currentIds[binding.id] = true
 	end
@@ -631,17 +683,17 @@ local function hiddenBindingCount(bindingList, hiddenPreferences)
 	return count
 end
 
-local function restoreHiddenBindings(bindingList, hiddenPreferences)
+local function restoreHiddenBindings(bindingList: { Binding }, hiddenPreferences: { [string]: boolean })
 	for _, binding in ipairs(bindingList or {}) do
 		hiddenPreferences[binding.id] = nil
 	end
 end
 
-local function visibleGroups()
+local function visibleGroups(): { CategoryGroup }
 	local showUndescribed = stl.config.getBool("show_undescribed", true)
 	local managing = view == "edit"
-	local groups = {}
-	local byName = {}
+	local groups: { CategoryGroup } = {}
+	local byName: { [string]: CategoryGroup } = {}
 
 	local tokens = splitQueryTokens(query)
 
@@ -664,7 +716,7 @@ local function visibleGroups()
 		end
 	end
 
-	table.sort(groups, function(a, b)
+	table.sort(groups, function(a: CategoryGroup, b: CategoryGroup): boolean
 		local left = categoryPriority(a.name)
 		local right = categoryPriority(b.name)
 		if left ~= right then
@@ -679,7 +731,7 @@ local function visibleGroups()
 	return groups
 end
 
-local function columnCount()
+local function columnCount(): number
 	local configured = math.clamp(stl.config.getNumber("columns", 3), 1, 4)
 	local outputWidth = 1920
 	if noctalia.focusedOutputName and noctalia.outputs then
@@ -695,8 +747,13 @@ local function columnCount()
 	return math.min(configured, responsive)
 end
 
-local function balancedColumns(groups, count)
-	local columns = {}
+type ColumnBucket = {
+	groups: { CategoryGroup },
+	weight: number,
+}
+
+local function balancedColumns(groups: { CategoryGroup }, count: number): { ColumnBucket }
+	local columns: { ColumnBucket } = {}
 	for index = 1, count do
 		columns[index] = { groups = {}, weight = 0 }
 	end
@@ -711,14 +768,14 @@ local function balancedColumns(groups, count)
 		columns[target].weight += group.weight
 	end
 	for _, column in ipairs(columns) do
-		table.sort(column.groups, function(a, b)
+		table.sort(column.groups, function(a: CategoryGroup, b: CategoryGroup): boolean
 			return a.order < b.order
 		end)
 	end
 	return columns
 end
 
-local function saveCustomDescription(binding, value)
+local function saveCustomDescription(binding: Binding, value: string)
 	value = trim(value)
 	if value == "" or value == binding.description then
 		preferences.descriptions[binding.id] = nil
@@ -731,10 +788,10 @@ local function saveCustomDescription(binding, value)
 	render()
 end
 
-local function bindingRow(binding, occurrence)
+local function bindingRow(binding: Binding, occurrence: number?): UiNode
 	local hidden = preferences.hidden[binding.id] == true
 	local contentOpacity = hidden and 0.45 or 1
-	local pills = {}
+	local pills: { UiNode } = {}
 
 	for index, modifier in ipairs(binding.modifiers) do
 		local modDisplay = MODIFIER_DISPLAY[modifier] or (modifier:sub(1, 1) .. lower(modifier:sub(2)))
@@ -746,25 +803,6 @@ local function bindingRow(binding, occurrence)
 	local identity = binding.id .. "#" .. (occurrence or 1)
 
 	if view == "edit" and editingId == identity then
-		local visibilityChanged = callback("visibility", function()
-			preferences.hidden[binding.id] = not hidden and true or nil
-			savePreferences()
-			render()
-		end)
-		local inputChanged = callback("editChange", function(value)
-			editDraft = value
-		end)
-		local submit = callback("editSubmit", function(value)
-			saveCustomDescription(binding, value)
-		end)
-		local save = callback("editSave", function()
-			saveCustomDescription(binding, editDraft)
-		end)
-		local cancel = callback("editCancel", function()
-			editingId = nil
-			editDraft = ""
-			render()
-		end)
 		return ui.row({ key = "edit-" .. identity, gap = 6, align = "center", paddingV = 0 }, {
 			ui.row({ minWidth = 188, gap = 3, align = "center", opacity = contentOpacity }, pills),
 			ui.input({
@@ -774,8 +812,12 @@ local function bindingRow(binding, occurrence)
 				focus = true,
 				controlSize = "sm",
 				flexGrow = 1,
-				onChange = inputChanged,
-				onSubmit = submit,
+				onChange = function(value: string)
+					editDraft = value
+				end,
+				onSubmit = function(value: string)
+					saveCustomDescription(binding, value)
+				end,
 			}),
 			ui.button({
 				glyph = "check",
@@ -785,7 +827,9 @@ local function bindingRow(binding, occurrence)
 				variant = "ghost",
 				controlSize = "sm",
 				tooltip = tr("save"),
-				onClick = save,
+				onClick = function()
+					saveCustomDescription(binding, editDraft)
+				end,
 			}),
 			ui.button({
 				glyph = "close",
@@ -795,7 +839,11 @@ local function bindingRow(binding, occurrence)
 				variant = "ghost",
 				controlSize = "sm",
 				tooltip = tr("cancel"),
-				onClick = cancel,
+				onClick = function()
+					editingId = nil
+					editDraft = ""
+					render()
+				end,
 			}),
 			ui.button({
 				glyph = hidden and "eye-off" or "eye",
@@ -806,12 +854,16 @@ local function bindingRow(binding, occurrence)
 				controlSize = "sm",
 				selected = hidden,
 				tooltip = hidden and tr("show_binding") or tr("hide_binding"),
-				onClick = visibilityChanged,
+				onClick = function()
+					preferences.hidden[binding.id] = not hidden and true or nil
+					savePreferences()
+					render()
+				end,
 			}),
 		})
 	end
 
-	local labels = {
+	local labels: { UiNode } = {
 		ui.label({
 			text = description,
 			color = colorValue("description", "text"),
@@ -827,24 +879,14 @@ local function bindingRow(binding, occurrence)
 		)
 	end
 
-	local row = {
+	local rowChildren: { UiNode } = {
 		ui.row({ minWidth = 188, gap = 3, align = "center", opacity = contentOpacity }, pills),
 		ui.column({ flexGrow = 1, gap = 0, opacity = contentOpacity }, labels),
 	}
 
 	if view == "edit" then
-		local edit = callback("edit", function()
-			editingId = identity
-			editDraft = description
-			render()
-		end)
-		local visibilityChanged = callback("visibility", function()
-			preferences.hidden[binding.id] = not hidden and true or nil
-			savePreferences()
-			render()
-		end)
 		table.insert(
-			row,
+			rowChildren,
 			ui.button({
 				glyph = "pencil",
 				width = 22,
@@ -853,11 +895,15 @@ local function bindingRow(binding, occurrence)
 				variant = "ghost",
 				controlSize = "sm",
 				tooltip = tr("edit_description"),
-				onClick = edit,
+				onClick = function()
+					editingId = identity
+					editDraft = description
+					render()
+				end,
 			})
 		)
 		table.insert(
-			row,
+			rowChildren,
 			ui.button({
 				glyph = hidden and "eye-off" or "eye",
 				width = 22,
@@ -867,17 +913,21 @@ local function bindingRow(binding, occurrence)
 				controlSize = "sm",
 				selected = hidden,
 				tooltip = hidden and tr("show_binding") or tr("hide_binding"),
-				onClick = visibilityChanged,
+				onClick = function()
+					preferences.hidden[binding.id] = not hidden and true or nil
+					savePreferences()
+					render()
+				end,
 			})
 		)
 	end
 
-	return ui.row({ key = identity, gap = 6, align = "center", paddingV = 0 }, row)
+	return ui.row({ key = identity, gap = 6, align = "center", paddingV = 0 }, rowChildren)
 end
 
-local function categoryNode(group)
+local function categoryNode(group: CategoryGroup): UiNode
 	local mainSection, subSection = group.name:match("^(.-)%s*•%s*(.+)$")
-	local headerNodes = {}
+	local headerNodes: { UiNode } = {}
 
 	if mainSection and subSection then
 		table.insert(
@@ -908,7 +958,7 @@ local function categoryNode(group)
 	table.insert(headerNodes, ui.separator({ color = "outline/0.25", thickness = 1, spacing = 2 }))
 
 	local children = headerNodes
-	local occurrences = {}
+	local occurrences: { [string]: number } = {}
 	for _, binding in ipairs(group.bindings) do
 		occurrences[binding.id] = (occurrences[binding.id] or 0) + 1
 		table.insert(children, bindingRow(binding, occurrences[binding.id]))
@@ -917,7 +967,7 @@ local function categoryNode(group)
 	return ui.column({ key = "category-" .. group.name, gap = 2, paddingV = 4, align = "stretch" }, children)
 end
 
-local function bindingsBody()
+local function bindingsBody(): UiNode
 	local groups = visibleGroups()
 	if #groups == 0 then
 		return ui.column({ flexGrow = 1, align = "center", justify = "center" }, {
@@ -926,9 +976,9 @@ local function bindingsBody()
 		})
 	end
 	local columns = balancedColumns(groups, columnCount())
-	local columnNodes = {}
+	local columnNodes: { UiNode } = {}
 	for index, column in ipairs(columns) do
-		local categoryNodes = {}
+		local categoryNodes: { UiNode } = {}
 		for _, group in ipairs(column.groups) do
 			table.insert(categoryNodes, categoryNode(group))
 		end
@@ -942,23 +992,7 @@ local function bindingsBody()
 	})
 end
 
-local function colorControl(bucket, property)
-	local choose = callback("chooseColor", function()
-		chooseColor(bucket.id, property)
-	end)
-	local paste = callback("pasteColor", function()
-		pasteColor(bucket.id, property)
-	end)
-	local reset = callback("resetColor", function()
-		if preferences.colors[bucket.id] ~= nil then
-			preferences.colors[bucket.id][property] = nil
-			if next(preferences.colors[bucket.id]) == nil then
-				preferences.colors[bucket.id] = nil
-			end
-			savePreferences()
-			render()
-		end
-	end)
+local function colorControl(bucket: ColorBucket, property: "background" | "text"): UiNode
 	return ui.row({ gap = 5, align = "center", flexGrow = 1 }, {
 		ui.box({
 			width = 24,
@@ -973,21 +1007,47 @@ local function colorControl(bucket, property)
 			variant = "ghost",
 			controlSize = "sm",
 			flexGrow = 1,
-			onClick = choose,
+			onClick = function()
+				chooseColor(bucket.id, property)
+			end,
 		}),
 		ui.button({
 			glyph = "clipboard",
 			variant = "ghost",
 			controlSize = "sm",
 			tooltip = tr("paste"),
-			onClick = paste,
+			onClick = function()
+				pasteColor(bucket.id, property)
+			end,
 		}),
-		ui.button({ glyph = "restore", variant = "ghost", controlSize = "sm", tooltip = tr("reset"), onClick = reset }),
+		ui.button({
+			glyph = "restore",
+			variant = "ghost",
+			controlSize = "sm",
+			tooltip = tr("reset"),
+			onClick = function()
+				local colorObj = preferences.colors[bucket.id]
+				if colorObj ~= nil then
+					if property == "background" then
+						colorObj.background = nil
+					else
+						colorObj.text = nil
+					end
+
+					if colorObj.background == nil and colorObj.text == nil then
+						preferences.colors[bucket.id] = nil
+					end
+
+					savePreferences()
+					render()
+				end
+			end,
+		}),
 	})
 end
 
-local function appearanceBody()
-	local rows = {
+local function appearanceBody(): UiNode
+	local rows: { UiNode } = {
 		ui.label({ text = tr("customize_colors"), color = "on_surface_variant" }),
 	}
 	for _, bucket in ipairs(COLOR_BUCKETS) do
@@ -1002,45 +1062,33 @@ local function appearanceBody()
 			})
 		)
 	end
-	local resetAll = callback("resetAllColors", function()
-		preferences.colors = {}
-		savePreferences()
-		render()
-	end)
+
 	table.insert(rows, ui.separator({ spacing = 6 }))
 	table.insert(
 		rows,
 		ui.row({ gap = 8, align = "center" }, {
-			ui.button({ glyph = "restore", text = tr("reset_colors"), onClick = resetAll }),
+			ui.button({
+				glyph = "restore",
+				text = tr("reset_colors"),
+				onClick = function()
+					preferences.colors = {}
+					savePreferences()
+					render()
+				end,
+			}),
 		})
 	)
 	return ui.scroll({ flexGrow = 1, gap = 4 }, rows)
 end
 
-local function renderHeader()
-	local refreshClick = callback("refresh", function()
-		refresh()
-	end)
-	local editMode = callback("editMode", function()
-		view = view == "edit" and "bindings" or "edit"
-		editingId = nil
-		editDraft = ""
-		render()
-	end)
-	local appearance = callback("appearance", function()
-		view = view == "appearance" and "bindings" or "appearance"
-		editingId = nil
-		editDraft = ""
-		render()
-	end)
-
+local function renderHeader(): UiNode
 	local title = tr("title")
 	if currentCompositor ~= "" then
 		title = (currentCompositor == "mango" and "Mango" or (currentCompositor == "niri" and "Niri" or "Hyprland"))
 			.. " Keymap"
 	end
 
-	local children = {
+	local children: { UiNode } = {
 		ui.row({ minWidth = 230, gap = 7, align = "center", flexGrow = 1 }, {
 			ui.glyph({ name = "keyboard", size = 16, color = "primary" }),
 			ui.label({ text = title, fontSize = 15, fontWeight = "bold", color = "on_surface" }),
@@ -1048,18 +1096,6 @@ local function renderHeader()
 	}
 
 	if (view == "bindings" or view == "edit") and not loading and panelError == nil then
-		local searchChanged = callback("search", function(value)
-			query = value
-			editingId = nil
-			render()
-		end)
-		local clearSearch = callback("clearSearch", function()
-			query = ""
-			searchRevision += 1
-			searchFocused = true
-			render()
-		end)
-
 		table.insert(
 			children,
 			ui.input({
@@ -1069,7 +1105,11 @@ local function renderHeader()
 				focus = (view == "bindings" and editingId == nil and searchFocused),
 				controlSize = "sm",
 				width = 300,
-				onChange = searchChanged,
+				onChange = function(value: string)
+					query = value
+					editingId = nil
+					render()
+				end,
 			})
 		)
 		table.insert(
@@ -1081,7 +1121,12 @@ local function renderHeader()
 				controlSize = "sm",
 				enabled = query ~= "",
 				tooltip = tr("clear"),
-				onClick = clearSearch,
+				onClick = function()
+					query = ""
+					searchRevision += 1
+					searchFocused = true
+					render()
+				end,
 			})
 		)
 	end
@@ -1089,20 +1134,23 @@ local function renderHeader()
 	if not loading or #bindings > 0 then
 		table.insert(
 			children,
-			ui.label({ text = tr("binding_count", { count = #bindings }), color = "on_surface_variant", fontSize = 12 })
+			ui.label({
+				text = tr("binding_count", { count = #bindings }),
+				color = "on_surface_variant",
+				fontSize = 12,
+			})
 		)
 	end
 
 	if view == "edit" then
 		local count = hiddenBindingCount(bindings, preferences.hidden)
-		local restoreHidden = callback("restoreHidden", function()
-			restoreHiddenBindings(bindings, preferences.hidden)
-			savePreferences()
-			render()
-		end)
 		table.insert(
 			children,
-			ui.label({ text = tr("hidden_count", { count = count }), color = "on_surface_variant", fontSize = 12 })
+			ui.label({
+				text = tr("hidden_count", { count = count }),
+				color = "on_surface_variant",
+				fontSize = 12,
+			})
 		)
 		table.insert(
 			children,
@@ -1112,7 +1160,11 @@ local function renderHeader()
 				controlSize = "sm",
 				enabled = count > 0,
 				tooltip = tr("restore_hidden"),
-				onClick = restoreHidden,
+				onClick = function()
+					restoreHiddenBindings(bindings, preferences.hidden)
+					savePreferences()
+					render()
+				end,
 			})
 		)
 	end
@@ -1124,9 +1176,12 @@ local function renderHeader()
 			variant = "ghost",
 			tooltip = tr("refresh"),
 			enabled = true,
-			onClick = refreshClick,
+			onClick = function()
+				refresh()
+			end,
 		})
 	)
+
 	table.insert(
 		children,
 		ui.button({
@@ -1134,9 +1189,15 @@ local function renderHeader()
 			variant = "ghost",
 			tooltip = view == "edit" and tr("finish_editing") or tr("edit_bindings"),
 			selected = view == "edit",
-			onClick = editMode,
+			onClick = function()
+				view = view == "edit" and "bindings" or "edit"
+				editingId = nil
+				editDraft = ""
+				render()
+			end,
 		})
 	)
+
 	table.insert(
 		children,
 		ui.button({
@@ -1144,7 +1205,12 @@ local function renderHeader()
 			variant = "ghost",
 			tooltip = view == "appearance" and tr("back") or tr("appearance"),
 			selected = view == "appearance",
-			onClick = appearance,
+			onClick = function()
+				view = view == "appearance" and "bindings" or "appearance"
+				editingId = nil
+				editDraft = ""
+				render()
+			end,
 		})
 	)
 
@@ -1155,7 +1221,7 @@ render = function()
 	if not panelOpen then
 		return
 	end
-	resetCallbacks()
+
 	local contentState = "bindings"
 	if view == "appearance" then
 		contentState = "appearance"
@@ -1167,7 +1233,7 @@ render = function()
 		contentState = "edit"
 	end
 
-	local children = { renderHeader() }
+	local children: { UiNode } = { renderHeader() }
 
 	if view == "appearance" then
 		table.insert(children, appearanceBody())
@@ -1243,7 +1309,6 @@ stl.lifecycle.panel(getfenv(), {
 		searchFocused = false
 		editingId = nil
 		editDraft = ""
-		resetCallbacks()
 	end,
 
 	onKey = function(chord: string, pressed: boolean)
