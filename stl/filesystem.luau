@@ -80,6 +80,71 @@ end
 -- Path Manipulation API
 -- =============================================================================
 
+--- Normalizes a path by removing redundant inner slashes, current-dir references ('.'),
+--- and resolving parent segments ('..') without filesystem access.
+---
+--- ### Example:
+--- ```luau
+--- filesystem.normalizePath("/home/user/../user/.config//hypr") -- Returns "/home/user/.config/hypr"
+--- ```
+---
+--- @param path string Raw path string.
+--- @return string Normalized path.
+function filesystem.normalizePath(path: string): string
+	local isAbsolute = string.sub(path, 1, 1) == "/"
+	local parts: { string } = {}
+	for part in string.gmatch(path, "[^/]+") do
+		if part == ".." then
+			if #parts > 0 and parts[#parts] ~= ".." then
+				table.remove(parts)
+			elseif not isAbsolute then
+				table.insert(parts, part)
+			end
+		elseif part ~= "." and part ~= "" then
+			table.insert(parts, part)
+		end
+	end
+	local result = table.concat(parts, "/")
+	if isAbsolute then
+		result = "/" .. result
+	end
+	return result == "" and (if isAbsolute then "/" else ".") or result
+end
+
+--- Expands shell variables like `${VAR}`, `$VAR`, `$HOME`, and tilde (`~`) using
+--- environment variables or the host `expandPath` API.
+---
+--- ### Example:
+--- ```luau
+--- filesystem.expandEnvironment("$HOME/.config/hypr") -- Returns "/home/marky/.config/hypr"
+--- ```
+---
+--- @param path string Path containing environment variables or tilde.
+--- @return string Fully expanded path.
+function filesystem.expandEnvironment(path: string): string
+	local host: any = getHost()
+	local function getEnvSafe(name: string): string?
+		if host ~= nil and typeof(host.getenv) == "function" then
+			return (host.getenv :: (string) -> string?)(name)
+		elseif (os :: any) ~= nil and typeof((os :: any).getenv) == "function" then
+			return ((os :: any).getenv :: (string) -> string?)(name)
+		end
+		return nil
+	end
+
+	local expanded = string.gsub(path, "%${([%w_]+)}", function(name: string)
+		return getEnvSafe(name) or ("${" .. name .. "}")
+	end)
+
+	local homeVal = getEnvSafe("HOME")
+	expanded = string.gsub(expanded, "%$HOME", homeVal or "~")
+
+	if host ~= nil and typeof(host.expandPath) == "function" then
+		return (host.expandPath :: (string) -> string)(expanded)
+	end
+	return safeExpand(expanded)
+end
+
 --- Joins path segments using POSIX slashes and normalizes double slashes.
 ---
 --- ### Example:

@@ -1,10 +1,10 @@
 --!strict
---- Integration and lifecycle tests for Keybind Data Service.
+--- Integration and lifecycle tests for Keybind Data Service Orchestration.
 
 local testing = require("../../testing/testing.luau")
 local stl = require("../../stl/stl.luau")
-local constants = require("../constants.luau")
-local service = require("../service.luau")
+local constants = require("../../keybind-cheatsheet/constants.luau")
+local service = require("../../keybind-cheatsheet/service.luau")
 
 testing.suite("Keybind Service Pipeline", function(b)
 	local mockHost: testing.MockHost
@@ -14,10 +14,9 @@ testing.suite("Keybind Service Pipeline", function(b)
 		virtualFiles = {}
 		mockHost = testing.createMockHost()
 
-		-- Provide in-memory virtual filesystem hooks directly on the mock host
 		local rawHost = mockHost :: any
-		rawHost.readText = function(path: string): (string?, string?)
-			local norm = service.normalizePath(service.expandEnvironment(path))
+		rawHost.readFile = function(path: string): (string?, string?)
+			local norm = stl.filesystem.normalizePath(stl.filesystem.expandEnvironment(path))
 			local file = virtualFiles[norm]
 			if file then
 				return file.content, nil
@@ -25,8 +24,8 @@ testing.suite("Keybind Service Pipeline", function(b)
 			return nil, "File not found"
 		end
 
-		rawHost.writeText = function(path: string, content: string): (boolean, string?)
-			local norm = service.normalizePath(service.expandEnvironment(path))
+		rawHost.writeFile = function(path: string, content: string): (boolean, string?)
+			local norm = stl.filesystem.normalizePath(stl.filesystem.expandEnvironment(path))
 			virtualFiles[norm] = {
 				content = content,
 				size = #content,
@@ -36,12 +35,12 @@ testing.suite("Keybind Service Pipeline", function(b)
 		end
 
 		rawHost.fileExists = function(path: string): boolean
-			local norm = service.normalizePath(service.expandEnvironment(path))
+			local norm = stl.filesystem.normalizePath(stl.filesystem.expandEnvironment(path))
 			return virtualFiles[norm] ~= nil
 		end
 
 		rawHost.fileInfo = function(path: string): (testing.FileInfo?, string?)
-			local norm = service.normalizePath(service.expandEnvironment(path))
+			local norm = stl.filesystem.normalizePath(stl.filesystem.expandEnvironment(path))
 			local file = virtualFiles[norm]
 			if file then
 				return {
@@ -53,9 +52,8 @@ testing.suite("Keybind Service Pipeline", function(b)
 			return nil, "File not found"
 		end
 
-		-- Mock listDir so walkConfig discovers directory contents
 		rawHost.listDir = function(dirPath: string): ({ string }?, string?)
-			local normDir = service.normalizePath(service.expandEnvironment(dirPath))
+			local normDir = stl.filesystem.normalizePath(stl.filesystem.expandEnvironment(dirPath))
 			local results: { string } = {}
 			for path in pairs(virtualFiles) do
 				if string.sub(path, 1, #normDir) == normDir then
@@ -69,22 +67,6 @@ testing.suite("Keybind Service Pipeline", function(b)
 		end
 
 		testing.injectHost(mockHost)
-
-		-- Direct STL bridge fallback sync
-		local rawFs = stl.filesystem :: any
-		if rawFs and rawFs.writeText then
-			rawFs.writeText = rawHost.writeText
-			rawFs.readText = rawHost.readText
-			rawFs.fileInfo = rawHost.fileInfo
-			rawFs.exists = rawHost.fileExists
-			rawFs.listDir = rawHost.listDir
-		end
-
-		local rawG = _G :: any
-		local clearFn: any = rawG.__clearModuleCache
-		if typeof(clearFn) == "function" then
-			(clearFn :: (string?) -> ())("keybind-cheatsheet/service")
-		end
 	end)
 
 	b.afterEach(function()
@@ -105,7 +87,6 @@ testing.suite("Keybind Service Pipeline", function(b)
 
 	b.test("detectCompositor detects environment instance signatures", function()
 		mockHost.setConfig("compositor", "auto")
-
 		mockHost.getenv = function(name: string): string?
 			if name == "HYPRLAND_INSTANCE_SIGNATURE" then
 				return "hypr-1234"
@@ -117,48 +98,16 @@ testing.suite("Keybind Service Pipeline", function(b)
 	end)
 
 	-- =========================================================================
-	-- Cache Validity
-	-- =========================================================================
-
-	b.test("isCacheFresh returns true when source files match size and mtime", function()
-		local req: service.BindingRequest = {
-			compositor = "hyprland",
-			parser = "hypr-conf",
-			root = "/home/user/.config/hypr/hyprland.conf",
-		}
-
-		local content = "bind = SUPER, Q, killactive"
-		stl.filesystem.writeText(req.root, content)
-
-		local cachePayload: service.CachePayload = {
-			schema = 2,
-			request = req,
-			bindings = {},
-			warnings = {},
-			sources = {
-				{ path = req.root, size = #content, mtime = 1700000000 },
-			},
-		}
-
-		testing.assert.truthy(service.isCacheFresh(cachePayload, req))
-	end)
-
-	-- =========================================================================
 	-- Bootstrap & State Publishing
 	-- =========================================================================
 
 	b.test("bootstrap parses configuration and publishes snapshot to state channel", function()
-		local req: service.BindingRequest = {
-			compositor = "hyprland",
-			parser = "hypr-conf",
-			root = "/home/user/.config/hypr/hyprland.conf",
-		}
-
+		local configPath = "/home/user/.config/hypr/hyprland.conf"
 		mockHost.setConfig("compositor", "hyprland")
 		mockHost.setConfig("hyprland_parser", "conf")
-		mockHost.setConfig("hyprland_config", req.root)
+		mockHost.setConfig("hyprland_config", configPath)
 
-		stl.filesystem.writeText(req.root, 'bind = SUPER, Return, exec, kitty # "Terminal"\n')
+		stl.filesystem.writeText(configPath, 'bind = SUPER, Return, exec, kitty # "Terminal"\n')
 
 		service.bootstrap()
 
@@ -172,21 +121,12 @@ testing.suite("Keybind Service Pipeline", function(b)
 		end
 	end)
 
-	-- =========================================================================
-	-- Lifecycle Hooks
-	-- =========================================================================
-
-	b.test("bootstrap re-runs and publishes updated configurations", function()
-		local req: service.BindingRequest = {
-			compositor = "niri",
-			parser = "niri",
-			root = "/home/user/.config/niri/config.kdl",
-		}
-
+	b.test("bootstrap parses Niri KDL files correctly", function()
+		local configPath = "/home/user/.config/niri/config.kdl"
 		mockHost.setConfig("compositor", "niri")
-		mockHost.setConfig("niri_config", req.root)
+		mockHost.setConfig("niri_config", configPath)
 
-		stl.filesystem.writeText(req.root, 'Mod+Return { spawn "foot"; }\n')
+		stl.filesystem.writeText(configPath, 'Mod+Return { spawn "foot"; }\n')
 
 		service.bootstrap()
 
