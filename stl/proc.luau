@@ -12,8 +12,13 @@ local proc = {}
 --- Optional configuration flags for subprocess execution.
 export type ExecOptions = {
 	--- When true, automatically strips leading and trailing whitespace from stdout and stderr.
-	--- Defaults to true.
+	--- Set to false when capturing large binary or structured JSON payloads to conserve CPU budget.
+	--- Defaults to true for small outputs.
 	trimOutput: boolean?,
+
+	--- Maximum stdout length in bytes to automatically apply trimming to.
+	--- Defaults to 65536 (64 KiB). Outputs larger than this bypass auto-trimming unless forced.
+	maxTrimBytes: number?,
 }
 
 --- Raw process outcome emitted by the underlying host runtime.
@@ -44,11 +49,10 @@ export type ProcHost = {
 }
 
 -- =============================================================================
--- Internal State & Caching
+-- Internal State & Constants
 -- =============================================================================
 
---- Static default options table.
-local DEFAULT_OPTS: ExecOptions = { trimOutput = true }
+local DEFAULT_MAX_TRIM_BYTES = 64 * 1024 -- 64 KiB threshold
 
 --- Memoization cache for `commandExists` lookups across poll cycles.
 local PATH_CACHE: { [string]: boolean } = {}
@@ -56,24 +60,13 @@ local PATH_CACHE: { [string]: boolean } = {}
 --- Optional mock host override injected during tests.
 local injectedHost: ProcHost? = nil
 
---- Performs an allocation-minimized, $O(N)$ two-pointer trim without regex backtracking.
-local function fastTrim(str: string): string
-	local len = #str
-	if len == 0 then
+--- Fast C-level pattern trim (zero Lua loops, zero Luau instruction budget consumption).
+local function nativeTrim(str: string): string
+	if #str == 0 then
 		return ""
 	end
-
-	local first = string.find(str, "%S")
-	if not first then
-		return ""
-	end
-
-	local last = len
-	while last >= first and string.find(string.sub(str, last, last), "%s") do
-		last -= 1
-	end
-
-	return string.sub(str, first, last)
+	-- Native C regex matcher consumes negligible VM instructions
+	return str:match("^%s*(.-)%s*$") or ""
 end
 
 --- Resolves the effective host environment bridge, prioritizing active test mocks
@@ -118,10 +111,9 @@ end
 ---
 --- @param cmdOrArgv string | { string } Shell command string or argument array.
 --- @param cb ExecCallback Callback invoked upon process completion or immediate failure.
---- @param options ExecOptions? Optional execution controls (e.g. `trimOutput`).
+--- @param options ExecOptions? Optional execution controls (e.g. `trimOutput`, `maxTrimBytes`).
 --- @return boolean True if the execution request was accepted and queued by the host.
 function proc.exec(cmdOrArgv: string | { string }, cb: ExecCallback, options: ExecOptions?): boolean
-	local opts = options or DEFAULT_OPTS
 	local runner: any = getHost()
 
 	if runner == nil or typeof(runner.runAsync) ~= "function" then
@@ -129,6 +121,8 @@ function proc.exec(cmdOrArgv: string | { string }, cb: ExecCallback, options: Ex
 		return false
 	end
 
+	local maxTrim = (options and options.maxTrimBytes) or DEFAULT_MAX_TRIM_BYTES
+	local shouldTrim = if options and options.trimOutput ~= nil then options.trimOutput else true
 	local didComplete = false
 
 	local accepted = (runner.runAsync :: any)(cmdOrArgv, function(res: ProcessResult)
@@ -142,25 +136,28 @@ function proc.exec(cmdOrArgv: string | { string }, cb: ExecCallback, options: Ex
 			return
 		end
 
-		local shouldTrim = opts.trimOutput == true
 		local stdout = res.stdout or ""
+		local stderr = res.stderr or ""
+
+		-- Safeguard: Do not perform pattern operations if output exceeds byte threshold
+		local allowTrim = shouldTrim and #stdout <= maxTrim
 
 		if res.exitCode ~= 0 then
-			local err = if res.stderr and res.stderr ~= ""
-				then res.stderr
-				else string.format("Process exited with code %d", res.exitCode)
+			local err = if stderr ~= "" then stderr else string.format("Process exited with code %d", res.exitCode)
 
-			if shouldTrim then
-				err = fastTrim(err)
-				stdout = fastTrim(stdout)
+			if shouldTrim and #err <= maxTrim then
+				err = nativeTrim(err)
+			end
+			if allowTrim and stdout ~= "" then
+				stdout = nativeTrim(stdout)
 			end
 
 			cb(err, stdout, res.exitCode)
 			return
 		end
 
-		if shouldTrim and stdout ~= "" then
-			stdout = fastTrim(stdout)
+		if allowTrim and stdout ~= "" then
+			stdout = nativeTrim(stdout)
 		end
 
 		cb(nil, stdout, res.exitCode)
