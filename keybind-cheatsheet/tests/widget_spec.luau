@@ -5,24 +5,19 @@ local testing = require("../../testing/testing.luau")
 local stl = require("../../stl/stl.luau")
 local constants = require("../constants.luau")
 
-testing.suite("Keybind Cheatsheet: Bar Entrypoint", function(b)
+testing.suite("Keybind Cheatsheet: Bar Widget", function(b)
 	local mockHost: testing.MockHost
+	local mockBarWidget: testing.MockBarWidget
 	local panelToggled: { string }
-	local glyphSet: string?
-	local tooltipSet: string?
 	local capturedHandlers: {
 		onClick: (() -> ())?,
 		onIpc: ((event: string, payload: string) -> ())?,
 	}
 
 	b.beforeEach(function()
-		-- 1. Create fresh mock host and inject into STL
-		mockHost = testing.createMockHost()
-		testing.injectHost(mockHost)
-
+		mockHost = testing.bootstrap(28)
+		mockBarWidget = testing.getBarWidget()
 		panelToggled = {}
-		glyphSet = nil
-		tooltipSet = nil
 		capturedHandlers = {}
 
 		local rawHost = mockHost :: any
@@ -36,15 +31,6 @@ testing.suite("Keybind Cheatsheet: Bar Entrypoint", function(b)
 			return key
 		end
 
-		local mockBarWidget = {
-			setGlyph = function(glyph: string)
-				glyphSet = glyph
-			end,
-			setTooltip = function(tooltip: string)
-				tooltipSet = tooltip
-			end,
-		}
-
 		local lifecycleAny = stl.lifecycle :: any
 		if lifecycleAny then
 			lifecycleAny.widget = function(_env: any, handlers: any)
@@ -52,37 +38,18 @@ testing.suite("Keybind Cheatsheet: Bar Entrypoint", function(b)
 			end
 		end
 
-		-- Bind mock globals to environment
-		local rawG = _G :: any
-		rawG.barWidget = mockBarWidget
-		rawG.noctalia = mockHost
-
-		local rawEnv = getfenv() :: any
-		rawEnv.barWidget = mockBarWidget
-		rawEnv.noctalia = mockHost
-
-		-- 2. Invalidate widget module cache so every test runs a fresh instance
+		-- Invalidate widget module cache so every test runs a fresh instance
 		local clearFn: any = (_G :: any).__clearModuleCache
 		if typeof(clearFn) == "function" then
-			if typeof(clearFn) == "function" then
-				(clearFn :: (string?) -> ())("keybind-cheatsheet/widget")
-			end
+			(clearFn :: (string?) -> ())("keybind-cheatsheet/widget")
 		end
 
-		-- 3. Execute widget entrypoint for this specific test
+		-- Execute widget entrypoint for this test run
 		require("../widget.luau")
 	end)
 
 	b.afterEach(function()
 		testing.teardown()
-
-		local rawG = _G :: any
-		rawG.barWidget = nil
-		rawG.noctalia = nil
-
-		local rawEnv = getfenv() :: any
-		rawEnv.barWidget = nil
-		rawEnv.noctalia = nil
 	end)
 
 	-- =========================================================================
@@ -90,8 +57,8 @@ testing.suite("Keybind Cheatsheet: Bar Entrypoint", function(b)
 	-- =========================================================================
 
 	b.test("renders default glyph and localized tooltip on initialization", function()
-		testing.assert.equal(glyphSet, "keyboard")
-		testing.assert.equal(tooltipSet, "Keybind Cheatsheet")
+		testing.assert.equal(mockBarWidget.glyph, "keyboard")
+		testing.assert.equal(mockBarWidget.tooltip, "Keybind Cheatsheet")
 	end)
 
 	b.test("onClick handler triggers panel toggle for configured PANEL_ID", function()
