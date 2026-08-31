@@ -7,6 +7,7 @@ local lifecycle = require("./lifecycle.luau")
 local log = require("./log.luau")
 local proc = require("./proc.luau")
 local state = require("./state.luau")
+local codec = require("./codec.luau")
 
 export type StateChannel<T> = state.StateChannel<T>
 export type Logger = log.Logger
@@ -20,5 +21,6 @@ return {
 	log = log,
 	proc = proc,
 	state = state,
+	codec = codec,
 	__setHost = host.setInjectedHost,
 }

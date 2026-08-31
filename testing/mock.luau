@@ -25,6 +25,11 @@
 local hostBridge = require("../stl/host.luau")
 local apiMatrix = require("../stl/api_matrix.luau")
 
+-- Optional Lune integration for accurate JSON encoding/decoding during testing
+local hasLuneSerde, luneSerde = pcall(function()
+	return require("@lune/serde")
+end)
+
 -- =============================================================================
 -- Types & Contracts
 -- =============================================================================
@@ -125,6 +130,12 @@ export type MockJson = {
 --- with dedicated test harness control mutators.
 export type MockHost = hostBridge.HostBridge & {
 	state: MockState,
+	json: MockJson,
+	string: {
+		trim: (str: string) -> string,
+		urlEncode: (key: string) -> string,
+		urlDecode: (str: string) -> string,
+	},
 
 	--- Resolves configuration settings by key identifier (consumed by `stl.config`).
 	---
@@ -269,6 +280,7 @@ function mock.create(initialApiLevel: number?): MockHost
 			return configStore[key]
 		end,
 
+		-- Config
 		setConfig = function(key: string, val: any)
 			configStore[key] = val
 		end,
@@ -276,6 +288,8 @@ function mock.create(initialApiLevel: number?): MockHost
 		commandExists = function(_name: string): boolean
 			return true
 		end,
+
+		-- Process execution
 
 		runAsync = function(cmdOrArgv: any, cb: MockCallback?)
 			if typeof(cmdOrArgv) == "table" and activeLevel < 24 then
@@ -307,13 +321,21 @@ function mock.create(initialApiLevel: number?): MockHost
 			execHandler = handler
 		end,
 
+		-- Environment & Pathing
+
 		getenv = function(name: string): string?
 			return envVars[name]
+		end,
+
+		setEnv = function(key: string, val: string)
+			envVars[key] = val
 		end,
 
 		expandPath = function(path: string): string
 			return normalizeVirtualPath(path)
 		end,
+
+		-- Filesystem
 
 		fileExists = function(path: string): boolean
 			local resolved = normalizeVirtualPath(path)
@@ -322,6 +344,7 @@ function mock.create(initialApiLevel: number?): MockHost
 
 		fileInfo = function(path: string): (FileInfo?, string?)
 			local resolved = normalizeVirtualPath(path)
+
 			local content = virtualFiles[resolved]
 			if content ~= nil then
 				return {
@@ -330,15 +353,41 @@ function mock.create(initialApiLevel: number?): MockHost
 					isDir = false,
 				}, nil
 			end
-			return {
-				size = 1024,
-				mtime = 1700000000,
-				isDir = false,
-			}, nil
+
+			local dirPrefix = resolved .. "/"
+			for vpath, _ in pairs(virtualFiles) do
+				if string.sub(vpath, 1, #dirPrefix) == dirPrefix then
+					return {
+						size = 4096,
+						mtime = 1700000000,
+						isDir = true,
+					}, nil
+				end
+			end
+
+			return nil, "File not found: " .. path
 		end,
 
-		listDir = function(_path: string): ({ string }?, string?)
-			return {}, nil
+		listDir = function(path: string): ({ string }?, string?)
+			local resolved = normalizeVirtualPath(path)
+			if string.sub(resolved, -1) == "/" then
+				resolved = string.sub(resolved, 1, -2)
+			end
+
+			local results = {}
+			local prefix = resolved .. "/"
+
+			for vpath, _ in pairs(virtualFiles) do
+				if string.sub(vpath, 1, #prefix) == prefix then
+					local sub = string.sub(vpath, #prefix + 1)
+					local segment = string.split(sub, "/")[1]
+					if segment and not table.find(results, segment) then
+						table.insert(results, segment)
+					end
+				end
+			end
+
+			return results, nil
 		end,
 
 		readFile = function(path: string): (string?, string?)
@@ -356,6 +405,24 @@ function mock.create(initialApiLevel: number?): MockHost
 			return true, nil
 		end,
 
+		removeFile = function(path: string, content: string): (boolean, string?)
+			local resolved = normalizeVirtualPath(path)
+			virtualFiles[resolved] = content
+			return true, nil
+		end,
+
+		renameFile = function(from: string, to: string): (boolean, string?)
+			local src = normalizeVirtualPath(from)
+			local dst = normalizeVirtualPath(to)
+			local content = virtualFiles[src]
+			if content ~= nil then
+				virtualFiles[src] = nil
+				virtualFiles[dst] = content
+				return true, nil
+			end
+			return false, "Source file not found: " .. from
+		end,
+
 		mkdirAll = function(_path: string): (boolean, string?)
 			return true, nil
 		end,
@@ -369,25 +436,65 @@ function mock.create(initialApiLevel: number?): MockHost
 			virtualFiles[resolved] = content
 		end,
 
+		-- Logging & I18N
 		log = function(_msg: string) end,
 
 		formatTime = function(_fmt: string): string
 			return os.date("%Y-%m-%d %H:%M:%S") :: string
 		end,
 
-		tr = function(key: string): string
+		tr = function(key: string, _subst: { [string]: any }?): string
+			return key
+		end,
+		trp = function(key: string, _count: number, _subst: { [string]: any }?): string
 			return key
 		end,
 
+		-- JSON Codec
 		json = {
 			decode = function(str: string): (any, string?)
 				if str == "" or str == "[]" or str == "{}" then
 					return {}, nil
 				end
+				if hasLuneSerde then
+					local ok, res = pcall(luneSerde.decode, "json", str)
+					if ok then
+						return res, nil
+					end
+					return nil, tostring(res)
+				end
 				return {}, nil
 			end,
-			encode = function(_val: any, _pretty: boolean?): (string, string?)
+			encode = function(val: any, pretty: boolean?): (string?, string?)
+				if hasLuneSerde then
+					local ok, res = pcall(luneSerde.encode, "json", val, pretty)
+					if ok then
+						return res, nil
+					end
+					return nil, tostring(res)
+				end
 				return "{}", nil
+			end,
+		},
+
+		-- String Helpers
+		string = {
+			trim = function(str: string): string
+				return string.match(str, "^%s*(.-)%s*$") or ""
+			end,
+			urlEncode = function(str: string): string
+				return (
+					string.gsub(str, "([^%w%-%._~])", function(c)
+						return string.format("%%%02X", string.byte(c))
+					end)
+				)
+			end,
+			urlDecode = function(str: string): string
+				return (
+					string.gsub(str, "%%(%x%x)", function(hex)
+						return string.char(tonumber(hex, 16) or 0)
+					end)
+				)
 			end,
 		},
 

@@ -85,7 +85,7 @@ testing.run = test.run
 
 --- Re-export mock host factory
 testing.createMockHost = mock.createMockHost
-testing.createUi = mockUi.createUi()
+testing.createUi = mockUi.createUi
 testing.createPanel = mockUi.createPanel
 testing.createBarWidget = mockUi.createBarWidget
 
