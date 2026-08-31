@@ -32,13 +32,7 @@
 
 local test = require("./test.luau")
 local mock = require("./mock.luau")
-
-local compat = require("../stl/compat.luau")
-local config = require("../stl/config.luau")
-local filesystem = require("../stl/filesystem.luau")
-local log = require("../stl/log.luau")
-local proc = require("../stl/proc.luau")
-local state = require("../stl/state.luau")
+local stl = require("../stl/stl.luau")
 
 -- =============================================================================
 -- Re-exported Types & Contracts
@@ -58,23 +52,10 @@ export type SuiteBuilder = test.SuiteBuilder
 export type Assertions = test.Assertions
 
 -- =============================================================================
--- Internal State & Helpers
+-- Internal State
 -- =============================================================================
 
 local currentHost: mock.MockHost? = nil
-
---- Safely passes an active mock host bridge to an STL module's internal `__setHost` hook.
----
---- @param mod any STL module table to inject.
---- @param host mock.MockHost? Active mock host or nil to clear.
-local function setModuleHost(mod: any, host: mock.MockHost?)
-	if typeof(mod) == "table" then
-		local hook = mod.__setHost
-		if typeof(hook) == "function" then
-			(hook :: (any) -> ())(host)
-		end
-	end
-end
 
 -- =============================================================================
 -- Public Injection & Lifecycle API
@@ -106,13 +87,9 @@ testing.createMockHost = mock.createMockHost
 function testing.injectHost(host: mock.MockHost?)
 	currentHost = host
 
-	setModuleHost(proc, host)
-	setModuleHost(state, host)
-	setModuleHost(log, host)
-	setModuleHost(filesystem, host)
-	setModuleHost(config, host)
-	setModuleHost(compat, host)
+	stl.__setHost(host)
 
+	-- Bind globals for legacy plugins calling `noctalia.*` directly
 	local rawG = _G :: any
 	rawG.noctalia = host
 	local rawEnv = getfenv() :: any
@@ -150,7 +127,14 @@ function testing.teardown()
 		currentHost.reset()
 		currentHost = nil
 	end
+
+	-- Clear injected host from STL and globals
 	testing.injectHost(nil)
+
+	-- Explicitly flush in-memory state that persists across test boundaries
+	stl.proc.clearCache()
+	stl.log.clearBuffer()
+	stl.lifecycle.unbind(getfenv())
 end
 
 return testing

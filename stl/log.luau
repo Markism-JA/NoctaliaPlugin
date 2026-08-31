@@ -5,6 +5,8 @@
 --- Provides unified diagnostics across isolated Luau VM plugin surfaces (services,
 --- panels, bar widgets), supporting console emission, cross-VM IPC log replication,
 --- configuration synchronization, and test harness interception.
+local host = require("./host.luau")
+
 local log = {}
 
 -- =============================================================================
@@ -55,25 +57,6 @@ export type Logger = {
 	error: (msg: string, ctx: { [string]: any }?) -> (),
 }
 
---- Expected host runtime bridge definition required for diagnostic emission.
-export type LogHost = {
-	--- Host logging bridge function.
-	log: ((msg: string) -> ())?,
-	--- Host configuration retrieval function.
-	getConfig: ((key: string) -> any)?,
-	--- Formatted time resolver function.
-	formatTime: ((fmt: string) -> string)?,
-	--- JSON serialization namespace.
-	json: {
-		encode: ((val: any) -> (string, string?))?,
-	}?,
-	--- Shared cross-VM state storage namespace.
-	state: {
-		set: ((key: string, val: any) -> ())?,
-	}?,
-	[string]: any,
-}
-
 -- =============================================================================
 -- Internal State & Constants
 -- =============================================================================
@@ -99,32 +82,9 @@ local currentMinLevel: number = LEVEL_SEVERITY.INFO
 --- Local ring buffer holding recent structured log records.
 local ringBuffer: { LogRecord } = {}
 
---- Active mock host override injected during unit tests.
-local injectedHost: LogHost? = nil
-
 -- =============================================================================
 -- Internal Helpers
 -- =============================================================================
-
---- Resolves the effective host environment bridge, prioritizing active test mocks
---- and checking runtime globals across `_G` and `getfenv()`.
-local function getHost(): any
-	if injectedHost ~= nil then
-		return injectedHost
-	end
-
-	local gHost = (_G :: any).noctalia
-	if gHost ~= nil then
-		return gHost
-	end
-
-	local fenvHost = (getfenv() :: any).noctalia
-	if fenvHost ~= nil then
-		return fenvHost
-	end
-
-	return nil
-end
 
 --- Recursively serializes arbitrary Lua values into JSON-compliant strings for test fallbacks.
 ---
@@ -160,9 +120,9 @@ local function serializeContext(ctx: { [string]: any }?): string
 		return ""
 	end
 
-	local host: any = getHost()
-	if host ~= nil and host.json ~= nil and typeof(host.json.encode) == "function" then
-		local encoded, _ = (host.json.encode :: any)(ctx)
+	local currentHost = host.get()
+	if currentHost ~= nil and currentHost.json ~= nil and typeof(currentHost.json.encode) == "function" then
+		local encoded, _ = currentHost.json.encode(ctx)
 		if typeof(encoded) == "string" then
 			return " " .. encoded
 		end
@@ -175,9 +135,9 @@ end
 ---
 --- @return string Formatted timestamp.
 local function getTimestamp(): string
-	local host: any = getHost()
-	if host ~= nil and typeof(host.formatTime) == "function" then
-		return (host.formatTime :: (string) -> string)("%Y-%m-%d %H:%M:%S")
+	local currentHost = host.get()
+	if currentHost ~= nil and typeof(currentHost.formatTime) == "function" then
+		return (currentHost.formatTime :: (string) -> string)("%Y-%m-%d %H:%M:%S")
 	end
 
 	local rawDate = os.date("%Y-%m-%d %H:%M:%S")
@@ -196,19 +156,19 @@ local function emit(levelStr: LogLevel, tag: string, msg: string, ctx: { [string
 		return
 	end
 
-	local host: any = getHost()
+	local currentHost = host.get()
 	local contextStr = serializeContext(ctx)
 
 	-- Sink 1: Host Console or Process Terminal Stdout
-	if host ~= nil and typeof(host.log) == "function" then
-		(host.log :: (string) -> ())(string.format("[%s] [%s] %s%s", levelStr, tag, msg, contextStr))
+	if currentHost ~= nil and typeof(currentHost.log) == "function" then
+		currentHost.log(string.format("[%s] [%s] %s%s", levelStr, tag, msg, contextStr))
 	else
 		local ts = getTimestamp()
 		print(string.format("[%s] [%s] [%s] %s%s", ts, levelStr, tag, msg, contextStr))
 	end
 
 	-- Sink 2: Cross-VM In-Memory IPC Ring Buffer
-	if host ~= nil and host.state ~= nil and typeof(host.state.set) == "function" then
+	if currentHost ~= nil and currentHost.state ~= nil and typeof(currentHost.state.set) == "function" then
 		local record: LogRecord = {
 			timestamp = getTimestamp(),
 			level = levelStr,
@@ -222,7 +182,7 @@ local function emit(levelStr: LogLevel, tag: string, msg: string, ctx: { [string
 			table.remove(ringBuffer, 1)
 		end
 
-		(host.state.set :: any)(STATE_LOG_KEY, table.clone(ringBuffer))
+		currentHost.state.set(STATE_LOG_KEY, table.clone(ringBuffer))
 	end
 end
 
@@ -266,13 +226,13 @@ end
 ---
 --- @param configKey string? Optional configuration key name to inspect (defaults to "log_level").
 function log.syncFromConfig(configKey: string?)
-	local host: any = getHost()
-	if host == nil or typeof(host.getConfig) ~= "function" then
+	local currentHost = host.get()
+	if currentHost == nil or typeof(currentHost.getConfig) ~= "function" then
 		return
 	end
 
 	local key: string = configKey or "log_level"
-	local configured = (host.getConfig :: any)(key)
+	local configured = currentHost.getConfig(key)
 	if typeof(configured) == "string" then
 		local upper = string.upper(configured) :: LogLevel
 		if LEVEL_SEVERITY[upper] then
@@ -325,16 +285,5 @@ end
 -- =============================================================================
 -- Test Injection Hook
 -- =============================================================================
-
---- Injects a custom mock host bridge for testing outside Noctalia runtimes.
----
---- Resets the local memory ring buffer and restores default log level. Passing `nil` restores default host resolution.
----
---- @param mockHost LogHost? Mock host table implementing logging or state functions.
-function log.__setHost(mockHost: LogHost?)
-	injectedHost = mockHost
-	currentMinLevel = LEVEL_SEVERITY.INFO
-	table.clear(ringBuffer)
-end
 
 return log

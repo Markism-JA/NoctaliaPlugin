@@ -1,4 +1,5 @@
 --!strict
+local host = require("./host.luau")
 local compat = require("./compat.luau")
 local config = require("./config.luau")
 local filesystem = require("./filesystem.luau")
@@ -19,4 +20,5 @@ return {
 	log = log,
 	proc = proc,
 	state = state,
+	__setHost = host.setInjectedHost,
 }

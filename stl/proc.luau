@@ -3,6 +3,8 @@
 ---
 --- Provides safe asynchronous execution, detached process spawning, stream management,
 --- path caching, and host fallback for both live shell runtimes and CLI test harnesses.
+local host = require("./host.luau")
+
 local proc = {}
 
 -- =============================================================================
@@ -40,14 +42,6 @@ export type ProcessResult = {
 --- Standard completion callback for asynchronous subprocess execution.
 export type ExecCallback = (err: string?, stdout: string, exitCode: number) -> ()
 
---- Host interface definition required by proc.
-export type ProcHost = {
-	runAsync: ((cmdOrArgv: string | { string }, cb: ((res: ProcessResult) -> ())?) -> boolean)?,
-	runStream: ((cmd: string, onLine: (line: string) -> ()) -> boolean)?,
-	commandExists: ((name: string) -> boolean)?,
-	[string]: any,
-}
-
 -- =============================================================================
 -- Internal State & Constants
 -- =============================================================================
@@ -57,9 +51,6 @@ local DEFAULT_MAX_TRIM_BYTES = 64 * 1024 -- 64 KiB threshold
 --- Memoization cache for `commandExists` lookups across poll cycles.
 local PATH_CACHE: { [string]: boolean } = {}
 
---- Optional mock host override injected during tests.
-local injectedHost: ProcHost? = nil
-
 --- Fast C-level pattern trim (zero Lua loops, zero Luau instruction budget consumption).
 local function nativeTrim(str: string): string
 	if #str == 0 then
@@ -67,26 +58,6 @@ local function nativeTrim(str: string): string
 	end
 	-- Native C regex matcher consumes negligible VM instructions
 	return str:match("^%s*(.-)%s*$") or ""
-end
-
---- Resolves the effective host environment bridge, prioritizing active test mocks
---- and checking runtime globals across `_G` and `getfenv()`.
-local function getHost(): any
-	if injectedHost ~= nil then
-		return injectedHost
-	end
-
-	local gHost = (_G :: any).noctalia
-	if gHost ~= nil then
-		return gHost
-	end
-
-	local fenvHost = (getfenv() :: any).noctalia
-	if fenvHost ~= nil then
-		return fenvHost
-	end
-
-	return nil
 end
 
 -- =============================================================================
@@ -114,9 +85,9 @@ end
 --- @param options ExecOptions? Optional execution controls (e.g. `trimOutput`, `maxTrimBytes`).
 --- @return boolean True if the execution request was accepted and queued by the host.
 function proc.exec(cmdOrArgv: string | { string }, cb: ExecCallback, options: ExecOptions?): boolean
-	local runner: any = getHost()
+	local currentHost = host.get()
 
-	if runner == nil or typeof(runner.runAsync) ~= "function" then
+	if currentHost == nil or typeof(currentHost.runAsync) ~= "function" then
 		cb("Host process runner unavailable", "", -1)
 		return false
 	end
@@ -125,7 +96,7 @@ function proc.exec(cmdOrArgv: string | { string }, cb: ExecCallback, options: Ex
 	local shouldTrim = if options and options.trimOutput ~= nil then options.trimOutput else true
 	local didComplete = false
 
-	local accepted = (runner.runAsync :: any)(cmdOrArgv, function(res: ProcessResult)
+	local accepted = (currentHost.runAsync :: any)(cmdOrArgv, function(res: ProcessResult)
 		if didComplete then
 			return
 		end
@@ -186,11 +157,11 @@ end
 --- @param cmdOrArgv string | { string } Shell command string or argument array.
 --- @return boolean True if the launch request was accepted by the host queue.
 function proc.spawn(cmdOrArgv: string | { string }): boolean
-	local runner: any = getHost()
-	if runner == nil or typeof(runner.runAsync) ~= "function" then
+	local currentHost = host.get()
+	if currentHost == nil or typeof(currentHost.runAsync) ~= "function" then
 		return false
 	end
-	return (runner.runAsync :: any)(cmdOrArgv) == true
+	return (currentHost.runAsync :: any)(cmdOrArgv) == true
 end
 
 --- Starts a long-lived streaming process and invokes `onLine` for every line emitted to stdout.
@@ -208,11 +179,11 @@ end
 --- @param onLine (line: string) -> () Callback invoked per standard output line.
 --- @return boolean True if the stream was accepted and started.
 function proc.stream(cmd: string, onLine: (line: string) -> ()): boolean
-	local runner: any = getHost()
-	if runner == nil or typeof(runner.runStream) ~= "function" then
+	local currentHost = host.get()
+	if currentHost == nil or typeof(currentHost.runStream) ~= "function" then
 		return false
 	end
-	return (runner.runStream :: any)(cmd, onLine) == true
+	return (currentHost.runStream :: any)(cmd, onLine) == true
 end
 
 --- Checks whether a binary executable exists on the system `$PATH`.
@@ -235,7 +206,7 @@ function proc.exists(name: string): boolean
 		return cached
 	end
 
-	local checker: any = getHost()
+	local checker = host.get()
 	if checker == nil or typeof(checker.commandExists) ~= "function" then
 		return false
 	end
@@ -249,20 +220,6 @@ end
 ---
 --- Call this during unit tests or runtime reloads if `$PATH` binaries may have changed.
 function proc.clearCache()
-	table.clear(PATH_CACHE)
-end
-
--- =============================================================================
--- Test Injection Hook
--- =============================================================================
-
---- Injects a custom mock host bridge for testing outside Noctalia runtimes.
----
---- Clears the binary path memoization cache. Passing `nil` restores default host resolution.
----
---- @param mockHost ProcHost? Mock host table implementing process execution methods.
-function proc.__setHost(mockHost: ProcHost?)
-	injectedHost = mockHost
 	table.clear(PATH_CACHE)
 end
 

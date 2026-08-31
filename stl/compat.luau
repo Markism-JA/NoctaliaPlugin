@@ -3,6 +3,7 @@
 ---
 --- Provides type-safe host API level verification, dynamic method reflection,
 --- protected execution guards, and headless test host injection.
+local host = require("./host.luau")
 local apiMatrix = require("./api_matrix.luau")
 
 -- =============================================================================
@@ -15,58 +16,24 @@ export type FeatureKey = apiMatrix.FeatureKey
 --- Metadata record describing a versioned Noctalia host API tier.
 export type ApiEntry = apiMatrix.ApiEntry
 
---- Expected host runtime bridge for compatibility checking and logging.
-export type CompatHost = {
-	--- Active plugin API version level reported by the Noctalia host.
-	pluginApiLevel: number?,
-	--- Host logging bridge function.
-	log: ((msg: string) -> ())?,
-	[string]: any,
-}
-
 local compat = {}
 
 --- Re-exported static API matrix definition containing tiers, versions, and feature mappings.
 compat.API = apiMatrix
 
 -- =============================================================================
--- Internal State & Helpers
+-- Internal Helpers
 -- =============================================================================
-
---- Active mock host override injected during unit tests.
-local injectedHost: CompatHost? = nil
-
---- Resolves the effective host environment bridge, prioritizing active test mocks
---- and checking runtime globals across `_G` and `getfenv()`.
----
---- @return any The active host table.
-local function getHost(): any
-	if injectedHost ~= nil then
-		return injectedHost
-	end
-
-	local gHost = (_G :: any).noctalia
-	if gHost ~= nil then
-		return gHost
-	end
-
-	local fenvHost = (getfenv() :: any).noctalia
-	if fenvHost ~= nil then
-		return fenvHost
-	end
-
-	return nil
-end
 
 --- Dispatches formatted diagnostic logs to the host console or standard output.
 ---
 --- @param prefix string Diagnostic severity tag (e.g. "STL WARN", "STL ERROR").
 --- @param message string Formatted log body.
 local function logMessage(prefix: string, message: string)
-	local host: any = getHost()
+	local currentHost = host.get()
 	local formatted = string.format("[%s] %s", prefix, message)
-	if host ~= nil and typeof(host.log) == "function" then
-		(host.log :: (string) -> ())(formatted)
+	if currentHost ~= nil and typeof(currentHost.log) == "function" then
+		currentHost.log(formatted)
 	else
 		print(formatted)
 	end
@@ -88,11 +55,11 @@ end
 ---
 --- @return number The integer API level reported by the runtime host.
 function compat.getApiLevel(): number
-	local host: any = getHost()
-	if host == nil then
+	local currentHost = host.get()
+	if currentHost == nil then
 		return 0
 	end
-	local rawApi = host.pluginApiLevel
+	local rawApi = (currentHost :: any).pluginApiLevel
 	return if typeof(rawApi) == "number" then rawApi else 0
 end
 
@@ -198,12 +165,12 @@ end
 --- @param methodOrPath string Dotted property path on the host object (e.g. `"state.watch"`, `"panel.openContextMenu"`).
 --- @return boolean True if the path resolves to a non-nil value on the active host.
 function compat.has(methodOrPath: string): boolean
-	local host: any = getHost()
-	if host == nil then
+	local currentHost: any = host.get()
+	if currentHost == nil then
 		return false
 	end
 
-	local current: any = host
+	local current: any = currentHost
 	for segment in string.gmatch(methodOrPath, "[^.]+") do
 		if typeof(current) ~= "table" and typeof(current) ~= "userdata" then
 			return false
@@ -274,14 +241,5 @@ end
 -- =============================================================================
 -- Test Harness Hook
 -- =============================================================================
-
---- Injects or clears the mock host instance for testing.
----
---- Passing `nil` restores default host resolution.
----
---- @param mockHost CompatHost? Mock host table implementing `pluginApiLevel` and logging methods.
-function compat.__setHost(mockHost: CompatHost?)
-	injectedHost = mockHost
-end
 
 return compat

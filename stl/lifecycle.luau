@@ -276,12 +276,4 @@ end
 -- Test Injection Hook
 -- =============================================================================
 
---- Injects or clears the mock host instance for testing, resetting all registered handlers.
----
---- @param _mockHost any? Mock host table or nil on teardown.
-function lifecycle.__setHost(_mockHost: any?)
-	table.clear(activeHandlers)
-	lifecycle.unbind(getfenv())
-end
-
 return lifecycle

@@ -10,12 +10,11 @@ testing.suite("STL - Compatibility Matrix & Runtime Gating", function(b)
 	local mockHost: testing.MockHost
 
 	b.beforeEach(function()
-		mockHost = testing.createMockHost()
-		compat.__setHost(mockHost :: any)
+		mockHost = testing.bootstrap(28)
 	end)
 
 	b.afterEach(function()
-		compat.__setHost(nil)
+		testing.teardown()
 	end)
 
 	-- =========================================================================

@@ -3,6 +3,8 @@
 ---
 --- Provides path manipulation, atomic-safe file reading/writing, structured JSON
 --- caching, plugin data persistence, and headless test host injection.
+local host = require("./host.luau")
+
 local filesystem = {}
 
 -- =============================================================================
@@ -19,59 +21,15 @@ export type FileInfo = {
 	isDir: boolean,
 }
 
---- Expected host runtime bridge for filesystem and JSON operations.
-export type FilesystemHost = {
-	readFile: ((path: string) -> (string?, string?))?,
-	writeFile: ((path: string, content: string) -> (boolean, string?))?,
-	mkdirAll: ((path: string) -> (boolean, string?))?,
-	fileExists: ((path: string) -> boolean)?,
-	fileInfo: ((path: string) -> (FileInfo?, string?))?,
-	listDir: ((path: string) -> ({ string }?, string?))?,
-	expandPath: ((path: string) -> string)?,
-	pluginDataDir: (() -> (string?, string?))?,
-	json: {
-		decode: ((str: string) -> (any, string?))?,
-		encode: ((val: any, pretty: boolean?) -> (string, string?))?,
-	}?,
-	[string]: any,
-}
-
--- =============================================================================
--- Internal State
--- =============================================================================
-
---- Active mock host override injected during unit tests.
-local injectedHost: FilesystemHost? = nil
-
 -- =============================================================================
 -- Internal Helpers
 -- =============================================================================
 
---- Resolves the effective host environment bridge, prioritizing active test mocks
---- and checking runtime globals across `_G` and `getfenv()`.
-local function getHost(): any
-	if injectedHost ~= nil then
-		return injectedHost
-	end
-
-	local gHost = (_G :: any).noctalia
-	if gHost ~= nil then
-		return gHost
-	end
-
-	local fenvHost = (getfenv() :: any).noctalia
-	if fenvHost ~= nil then
-		return fenvHost
-	end
-
-	return nil
-end
-
 --- Expands `~` and path aliases safely across live and test environments.
 local function safeExpand(path: string): string
-	local host: any = getHost()
-	if string.sub(path, 1, 1) == "~" and host ~= nil and typeof(host.expandPath) == "function" then
-		return (host.expandPath :: (string) -> string)(path)
+	local currentHost = host.get()
+	if string.sub(path, 1, 1) == "~" and currentHost ~= nil and typeof(currentHost.expandPath) == "function" then
+		return currentHost.expandPath(path)
 	end
 	return path
 end
@@ -122,10 +80,10 @@ end
 --- @param path string Path containing environment variables or tilde.
 --- @return string Fully expanded path.
 function filesystem.expandEnvironment(path: string): string
-	local host: any = getHost()
+	local currentHost = host.get()
 	local function getEnvSafe(name: string): string?
-		if host ~= nil and typeof(host.getenv) == "function" then
-			return (host.getenv :: (string) -> string?)(name)
+		if currentHost ~= nil and typeof(currentHost.getenv) == "function" then
+			return currentHost.getenv(name)
 		elseif (os :: any) ~= nil and typeof((os :: any).getenv) == "function" then
 			return ((os :: any).getenv :: (string) -> string?)(name)
 		end
@@ -139,8 +97,8 @@ function filesystem.expandEnvironment(path: string): string
 	local homeVal = getEnvSafe("HOME")
 	expanded = string.gsub(expanded, "%$HOME", homeVal or "~")
 
-	if host ~= nil and typeof(host.expandPath) == "function" then
-		return (host.expandPath :: (string) -> string)(expanded)
+	if currentHost ~= nil and typeof(currentHost.expandPath) == "function" then
+		return currentHost.expandPath(expanded)
 	end
 	return safeExpand(expanded)
 end
@@ -227,12 +185,12 @@ end
 --- @param path string Target file or directory path.
 --- @return boolean True if the path exists.
 function filesystem.exists(path: string): boolean
-	local host: any = getHost()
-	if host == nil or typeof(host.fileExists) ~= "function" then
+	local currentHost = host.get()
+	if currentHost == nil or typeof(currentHost.fileExists) ~= "function" then
 		return false
 	end
 	local expanded = safeExpand(path)
-	return (host.fileExists :: (string) -> boolean)(expanded) == true
+	return currentHost.fileExists(expanded) == true
 end
 
 --- Retrieves file metadata such as size, modification time, and directory status.
@@ -240,12 +198,20 @@ end
 --- @param path string Target file path.
 --- @return (FileInfo?, string?) Metadata record on success, or nil and error message.
 function filesystem.fileInfo(path: string): (FileInfo?, string?)
-	local host: any = getHost()
-	if host == nil or typeof(host.fileInfo) ~= "function" then
+	local currentHost = host.get()
+	if currentHost == nil or typeof(currentHost.fileInfo) ~= "function" then
 		return nil, "Host fileInfo API unavailable"
 	end
 	local expanded = safeExpand(path)
-	return (host.fileInfo :: (string) -> (FileInfo?, string?))(expanded)
+	local info, err = currentHost.fileInfo(expanded)
+	if not info then
+		return nil, err
+	end
+	return {
+		size = info.size,
+		mtime = info.mtime,
+		isDir = info.isDir,
+	}, nil
 end
 
 --- Lists entry names within a directory.
@@ -253,12 +219,12 @@ end
 --- @param path string Target directory path.
 --- @return ({ string }?, string?) Array of entry names on success, or nil and error.
 function filesystem.listDir(path: string): ({ string }?, string?)
-	local host: any = getHost()
-	if host == nil or typeof(host.listDir) ~= "function" then
+	local currentHost = host.get()
+	if currentHost == nil or typeof(currentHost.listDir) ~= "function" then
 		return nil, "Host listDir API unavailable"
 	end
 	local expanded = safeExpand(path)
-	return (host.listDir :: (string) -> ({ string }?, string?))(expanded)
+	return currentHost.listDir(expanded)
 end
 
 --- Reads an entire text file synchronously.
@@ -266,12 +232,12 @@ end
 --- @param path string Path to the file.
 --- @return (string?, string?) File content on success, or nil and error message.
 function filesystem.readText(path: string): (string?, string?)
-	local host: any = getHost()
-	if host == nil or typeof(host.readFile) ~= "function" then
+	local currentHost = host.get()
+	if currentHost == nil or typeof(currentHost.readFile) ~= "function" then
 		return nil, "Host readFile API unavailable"
 	end
 	local expanded = safeExpand(path)
-	return (host.readFile :: (string) -> (string?, string?))(expanded)
+	return currentHost.readFile(expanded)
 end
 
 --- Writes content to a file, creating intermediate parent directories if required.
@@ -280,21 +246,21 @@ end
 --- @param content string Text content to write.
 --- @return (boolean, string?) True on success, or false and error message.
 function filesystem.writeText(path: string, content: string): (boolean, string?)
-	local host: any = getHost()
-	if host == nil or typeof(host.writeFile) ~= "function" then
+	local currentHost = host.get()
+	if currentHost == nil or typeof(currentHost.writeFile) ~= "function" then
 		return false, "Host writeFile API unavailable"
 	end
 
 	local expanded = safeExpand(path)
 	local parentDir = filesystem.dirName(expanded)
 
-	if parentDir ~= "." and parentDir ~= "/" and typeof(host.mkdirAll) == "function" then
+	if parentDir ~= "." and parentDir ~= "/" and typeof(currentHost.mkdirAll) == "function" then
 		pcall(function()
-			(host.mkdirAll :: (string) -> (boolean, string?))(parentDir)
+			(currentHost.mkdirAll :: (string) -> (boolean, string?))(parentDir)
 		end)
 	end
 
-	return (host.writeFile :: (string, string) -> (boolean, string?))(expanded, content)
+	return currentHost.writeFile(expanded, content)
 end
 
 -- =============================================================================
@@ -316,12 +282,12 @@ function filesystem.readJson(path: string): (any?, string?)
 		return nil, err
 	end
 
-	local host: any = getHost()
-	if host == nil or host.json == nil or typeof(host.json.decode) ~= "function" then
+	local currentHost = host.get()
+	if currentHost == nil or currentHost.json == nil or typeof(currentHost.json.decode) ~= "function" then
 		return nil, "Host JSON decoder unavailable"
 	end
 
-	local data, decodeErr = (host.json.decode :: (string) -> (any, string?))(content)
+	local data, decodeErr = currentHost.json.decode(content)
 	if decodeErr then
 		return nil, "JSON parse error: " .. tostring(decodeErr)
 	end
@@ -336,13 +302,13 @@ end
 --- @param pretty boolean? When true, formats output with indented whitespace (defaults to true).
 --- @return (boolean, string?) True on success, or false and error message.
 function filesystem.writeJson(path: string, value: any, pretty: boolean?): (boolean, string?)
-	local host: any = getHost()
-	if host == nil or host.json == nil or typeof(host.json.encode) ~= "function" then
+	local currentHost = host.get()
+	if currentHost == nil or currentHost.json == nil or typeof(currentHost.json.encode) ~= "function" then
 		return false, "Host JSON encoder unavailable"
 	end
 
 	local isPretty = if pretty ~= nil then pretty else true
-	local jsonStr, err = (host.json.encode :: (any, boolean?) -> (string?, string?))(value, isPretty)
+	local jsonStr, err = currentHost.json.encode(value, isPretty)
 	if not jsonStr then
 		return false, "JSON encode error: " .. (err or "unknown")
 	end
@@ -358,11 +324,11 @@ end
 ---
 --- @return (string?, string?) Absolute directory path, or nil and error message.
 function filesystem.getDataDir(): (string?, string?)
-	local host: any = getHost()
-	if host == nil or typeof(host.pluginDataDir) ~= "function" then
+	local currentHost = host.get()
+	if currentHost == nil or typeof(currentHost.pluginDataDir) ~= "function" then
 		return nil, "Host pluginDataDir API unavailable"
 	end
-	return (host.pluginDataDir :: () -> (string?, string?))()
+	return currentHost.pluginDataDir()
 end
 
 --- Reads a JSON file from the plugin's dedicated persistent state directory.
@@ -394,12 +360,5 @@ end
 -- =============================================================================
 -- Test Injection Hook
 -- =============================================================================
-
---- Injects a custom mock host bridge for headless unit tests. Passing nil restores default host.
----
---- @param mockHost FilesystemHost? Mock host table implementing file and JSON methods.
-function filesystem.__setHost(mockHost: FilesystemHost?)
-	injectedHost = mockHost
-end
 
 return filesystem

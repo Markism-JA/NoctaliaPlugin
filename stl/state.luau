@@ -1,8 +1,10 @@
 --!strict
 --- Typed cross-entry state pub/sub abstraction for Noctalia.
-
+---
 --- Provides type-safe shared state channels between isolated Luau VMs
 --- (Services, Panels, Bar Widgets) with fallback defaults and CLI test support.
+local host = require("./host.luau")
+
 local state = {}
 
 -- =============================================================================
@@ -19,34 +21,9 @@ export type StateChannel<T> = {
 	watch: (fn: (val: T) -> ()) -> (),
 }
 
---- Host interface definition required by state.
-export type StateBridge = {
-	get: ((key: string) -> any)?,
-	set: ((key: string, val: any) -> ())?,
-	watch: ((key: string, fn: (newVal: any) -> ()) -> ())?,
-}
-
-export type StateHost = {
-	state: StateBridge?,
-}
-
 -- =============================================================================
--- Internal State & Helpers
+-- Internal Helpers
 -- =============================================================================
-
---- Optional mock host override injected during tests.
-local injectedHost: StateHost? = nil
-
---- Resolves the effective state host bridge.
-local function getStateBridge(): StateBridge?
-	if injectedHost ~= nil and injectedHost.state ~= nil then
-		return injectedHost.state
-	end
-	if (noctalia :: any) ~= nil and (noctalia :: any).state ~= nil then
-		return (noctalia :: any).state
-	end
-	return nil
-end
 
 --- Shallow clone helper to protect default table values from in-place mutation.
 local function cloneDefault<T>(val: T): T
@@ -54,15 +31,6 @@ local function cloneDefault<T>(val: T): T
 		return (table.clone(val :: any) :: any) :: T
 	end
 	return val
-end
-
--- =============================================================================
--- Test Harness Hook
--- =============================================================================
-
---- Injects or clears the mock host instance for testing.
-function state.__setHost(host: StateHost?)
-	injectedHost = host
 end
 
 -- =============================================================================
@@ -91,36 +59,36 @@ end
 function state.channel<T>(key: string, defaultVal: T): StateChannel<T>
 	return {
 		get = function(): T
-			local bridge = getStateBridge()
-			if bridge == nil or bridge.get == nil then
+			local currentHost = host.get()
+			if currentHost == nil or currentHost.state == nil or typeof(currentHost.state.get) ~= "function" then
 				return cloneDefault(defaultVal)
 			end
 
-			local val = (bridge.get :: any)(key)
+			local val = currentHost.state.get(key)
 			if val ~= nil then
-				return (val :: any) :: T
+				return val :: T
 			end
 
 			return cloneDefault(defaultVal)
 		end,
 
 		set = function(val: T)
-			local bridge = getStateBridge()
-			if bridge == nil or bridge.set == nil then
+			local currentHost = host.get()
+			if currentHost == nil or currentHost.state == nil or typeof(currentHost.state.set) ~= "function" then
 				return
 			end
-			(bridge.set :: any)(key, val)
+			currentHost.state.set(key, val)
 		end,
 
 		watch = function(fn: (val: T) -> ())
-			local bridge = getStateBridge()
-			if bridge == nil or bridge.watch == nil then
+			local currentHost = host.get()
+			if currentHost == nil or currentHost.state == nil or typeof(currentHost.state.watch) ~= "function" then
 				return
 			end
 
-			(bridge.watch :: any)(key, function(newVal: any)
+			currentHost.state.watch(key, function(newVal: any)
 				if newVal ~= nil then
-					fn((newVal :: any) :: T)
+					fn(newVal :: T)
 				else
 					fn(cloneDefault(defaultVal))
 				end
@@ -135,14 +103,14 @@ end
 --- @param fallback T? Optional fallback if state is nil.
 --- @return T? The state value or fallback.
 function state.get<T>(key: string, fallback: T?): T?
-	local bridge = getStateBridge()
-	if bridge == nil or bridge.get == nil then
+	local currentHost = host.get()
+	if currentHost == nil or currentHost.state == nil or typeof(currentHost.state.get) ~= "function" then
 		return fallback
 	end
 
-	local val = (bridge.get :: any)(key)
+	local val = currentHost.state.get(key)
 	if val ~= nil then
-		return (val :: any) :: T
+		return val :: T
 	end
 	return fallback
 end
@@ -152,11 +120,15 @@ end
 --- @param key string The state key to write.
 --- @param val any The payload value.
 function state.set(key: string, val: any)
-	local bridge = getStateBridge()
-	if bridge == nil or bridge.set == nil then
+	local currentHost = host.get()
+	if currentHost == nil or currentHost.state == nil or typeof(currentHost.state.set) ~= "function" then
 		return
 	end
-	(bridge.set :: any)(key, val)
+	currentHost.state.set(key, val)
 end
+
+-- =============================================================================
+-- Test Harness Hook
+-- =============================================================================
 
 return state
