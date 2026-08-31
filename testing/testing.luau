@@ -32,6 +32,7 @@
 
 local test = require("./test.luau")
 local mock = require("./mock.luau")
+local mockUi = require("./mock_ui.luau")
 local stl = require("../stl/stl.luau")
 
 -- =============================================================================
@@ -46,6 +47,13 @@ export type ExecHandler = mock.ExecHandler
 export type ExecResult = mock.ExecResult
 export type FileInfo = mock.FileInfo
 
+export type MockUiNode = mockUi.MockUiNode
+export type MockPanel = mockUi.MockPanel
+export type MockBarWidget = mockUi.MockBarWidget
+export type MockDesktopWidget = mockUi.MockDesktopWidget
+export type MockShortcut = mockUi.MockShortcut
+export type MockLauncher = mockUi.MockLauncher
+
 export type TestCase = test.TestCase
 export type TestSuite = test.TestSuite
 export type SuiteBuilder = test.SuiteBuilder
@@ -56,6 +64,12 @@ export type Assertions = test.Assertions
 -- =============================================================================
 
 local currentHost: mock.MockHost? = nil
+local currentPanel: mockUi.MockPanel = mockUi.createPanel()
+local currentBarWidget: mockUi.MockBarWidget = mockUi.createBarWidget()
+local currentDesktopWidget: mockUi.MockDesktopWidget = mockUi.createDesktopWidget()
+local currentShortcut: mockUi.MockShortcut = mockUi.createShortcut()
+local currentLauncher: mockUi.MockLauncher = mockUi.createLauncher()
+local currentUi = mockUi.createUi()
 
 -- =============================================================================
 -- Public Injection & Lifecycle API
@@ -71,6 +85,9 @@ testing.run = test.run
 
 --- Re-export mock host factory
 testing.createMockHost = mock.createMockHost
+testing.createUi = mockUi.createUi()
+testing.createPanel = mockUi.createPanel
+testing.createBarWidget = mockUi.createBarWidget
 
 --- Injects a mock host instance into all core STL modules, globals, and environment tables.
 ---
@@ -86,14 +103,32 @@ testing.createMockHost = mock.createMockHost
 --- @param host mock.MockHost? Active mock host instance to inject, or `nil` to clear.
 function testing.injectHost(host: mock.MockHost?)
 	currentHost = host
-
 	stl.__setHost(host)
 
-	-- Bind globals for legacy plugins calling `noctalia.*` directly
 	local rawG = _G :: any
-	rawG.noctalia = host
 	local rawEnv = getfenv() :: any
+
+	rawG.noctalia = host
 	rawEnv.noctalia = host
+
+	-- Bind UI tree constructors and surface controllers
+	rawG.ui = currentUi
+	rawEnv.ui = currentUi
+
+	rawG.panel = currentPanel
+	rawEnv.panel = currentPanel
+
+	rawG.barWidget = currentBarWidget
+	rawEnv.barWidget = currentBarWidget
+
+	rawG.desktopWidget = currentDesktopWidget
+	rawEnv.desktopWidget = currentDesktopWidget
+
+	rawG.shortcut = currentShortcut
+	rawEnv.shortcut = currentShortcut
+
+	rawG.launcher = currentLauncher
+	rawEnv.launcher = currentLauncher
 end
 
 --- Bootstraps a fresh mock host and injects it across the entire standard library.
@@ -112,6 +147,27 @@ function testing.bootstrap(apiLevel: number?): mock.MockHost
 	local host = mock.createMockHost(apiLevel)
 	testing.injectHost(host)
 	return host
+end
+
+--- Surface controller accessors for test assertions
+function testing.getPanel(): mockUi.MockPanel
+	return currentPanel
+end
+
+function testing.getBarWidget(): mockUi.MockBarWidget
+	return currentBarWidget
+end
+
+function testing.getDesktopWidget(): mockUi.MockDesktopWidget
+	return currentDesktopWidget
+end
+
+function testing.getShortcut(): mockUi.MockShortcut
+	return currentShortcut
+end
+
+function testing.getLauncher(): mockUi.MockLauncher
+	return currentLauncher
 end
 
 --- Restores real runtime bindings by clearing mock host injection across all modules and environments.
