@@ -1,20 +1,26 @@
 --!strict
 -- Interactive Workspace Layout Selector Panel for Hyprland & Noctalia
--- Ported to Noctalia Standard Library (stl).
 
 local stl = require("../stl/stl.luau")
 local constants = require("./constants.luau")
+local types = require("./types.luau")
 local log = stl.log.scope("HyprLayoutSwitcher")
 
-local uiNode: any = ui
+type LayoutOption = types.LayoutOption
+type TopologyState = types.TopologyState
 
-type LayoutOption = {
-	id: string,
-	name: string,
-	badge: string,
-	glyph: string,
-	description: string,
-	shortcut: string,
+type MonitorTopology = {
+	workspaceId: (number | string)?,
+	workspaceName: string?,
+	layout: string?,
+}
+
+type HyprActiveWorkspace = {
+	id: number,
+	name: string?,
+	monitor: string?,
+	layout: string?,
+	tiledLayout: string?,
 }
 
 local LAYOUT_OPTIONS: { LayoutOption } = {
@@ -57,7 +63,7 @@ local topologyChannel = stl.state.channel(constants.TOPOLOGY_KEY, {} :: any)
 
 local panelOpen = false
 local focusedMonitor = "default"
-local activeWsId: any = nil
+local activeWsId: (number | string)? = nil
 local activeWsName = ""
 local currentLayout = "dwindle"
 local selectedIndex = 1
@@ -87,13 +93,14 @@ local function setLayout(layoutId: string)
 		)
 	end
 
-	local cmd = "hyprctl eval '" .. lua:gsub("'", "'\\''") .. "'"
+	local escapedLua = (lua:gsub("'", "'\\''"))
+	local cmd = "hyprctl eval '" .. escapedLua .. "'"
 	stl.proc.exec(cmd, function(err, _stdout, _code)
 		if err then
 			log.warn("Failed to dispatch layout switch via hyprctl", { err = err })
 		end
 
-		local topology = topologyChannel.get()
+		local topology: TopologyState? = topologyChannel.get()
 		if topology and typeof(topology.monitors) == "table" and topology.monitors[focusedMonitor] then
 			topology.monitors[focusedMonitor].layout = layoutId
 			topology.focusedLayout = layoutId
@@ -105,13 +112,13 @@ local function setLayout(layoutId: string)
 end
 
 local function fetchActiveState(cb: (() -> ())?)
-	local topology = topologyChannel.get()
+	local topology: TopologyState? = topologyChannel.get()
 	if topology and typeof(topology.monitors) == "table" then
 		focusedMonitor = topology.focusedOutput or "default"
 		local monData = topology.monitors[focusedMonitor]
 		if monData then
 			activeWsId = monData.workspaceId
-			activeWsName = monData.workspaceName or tostring(activeWsId)
+			activeWsName = monData.workspaceName or tostring(activeWsId or "?")
 			currentLayout = monData.layout or "dwindle"
 			syncSelectedIndex()
 			if cb then
@@ -131,8 +138,8 @@ local function fetchActiveState(cb: (() -> ())?)
 
 	stl.proc.exec({ "hyprctl", "activeworkspace", "-j" }, function(err, stdout, _code)
 		if not err and stdout ~= "" then
-			local ws, decodeErr = noctalia.json.decode(stdout)
-			if not decodeErr and typeof(ws) == "table" then
+			local ws: HyprActiveWorkspace?, decodeErr = noctalia.json.decode(stdout)
+			if not decodeErr and typeof(ws) == "table" and ws ~= nil then
 				activeWsId = ws.id
 				activeWsName = ws.name or tostring(ws.id)
 				focusedMonitor = ws.monitor or "default"
@@ -146,7 +153,7 @@ local function fetchActiveState(cb: (() -> ())?)
 	end)
 end
 
-local function layoutCard(opt: LayoutOption, index: number): any
+local function layoutCard(opt: LayoutOption, index: number): UiNode
 	local isActive = (opt.id == currentLayout)
 	local isNavFocused = (index == selectedIndex)
 
@@ -155,11 +162,10 @@ local function layoutCard(opt: LayoutOption, index: number): any
 		else (if isActive then "primary/0.12" else "surface_variant/0.2")
 
 	local borderColor = if isNavFocused then "primary" else (if isActive then "primary/0.5" else "outline/0.15")
-
 	local borderWidth = if isNavFocused then 2 else 1
 	local titleColor = if isNavFocused or isActive then "primary" else "on_surface"
 
-	return uiNode.row({
+	return ui.row({
 		key = "card-" .. opt.id,
 		fill = cardFill,
 		border = borderColor,
@@ -173,7 +179,8 @@ local function layoutCard(opt: LayoutOption, index: number): any
 			setLayout(opt.id)
 		end,
 	}, {
-		uiNode.row({
+		-- Leading Icon Container
+		ui.row({
 			width = 40,
 			height = 40,
 			radius = 8,
@@ -181,25 +188,31 @@ local function layoutCard(opt: LayoutOption, index: number): any
 			align = "center",
 			justify = "center",
 		}, {
-			uiNode.glyph({
+			ui.glyph({
 				name = opt.glyph,
 				size = 20,
 				color = if isNavFocused then "on_primary" else (if isActive then "primary" else "on_surface_variant"),
 			}),
 		}),
 
-		uiNode.column({ flexGrow = 1, gap = 2, align = "stretch" }, {
-			uiNode.row({ align = "center", justify = "space_between" }, {
-				uiNode.row({ gap = 6, align = "center" }, {
-					uiNode.label({ text = opt.name, fontWeight = "bold", fontSize = 14, color = titleColor }),
-					uiNode.row({
+		-- Card Details Column
+		ui.column({ flexGrow = 1, gap = 2, align = "stretch" }, {
+			ui.row({ align = "center", justify = "space_between" }, {
+				ui.row({ gap = 6, align = "center" }, {
+					ui.label({
+						text = opt.name,
+						fontWeight = "bold",
+						fontSize = 14,
+						color = titleColor,
+					}),
+					ui.row({
 						fill = if isActive then "primary/0.25" else "surface_variant/0.4",
 						radius = 4,
 						paddingH = 5,
 						paddingV = 1,
 						align = "center",
 					}, {
-						uiNode.label({
+						ui.label({
 							text = opt.badge,
 							fontSize = 10,
 							fontWeight = "bold",
@@ -209,17 +222,28 @@ local function layoutCard(opt: LayoutOption, index: number): any
 				}),
 
 				if isActive
-					then uiNode.row({ fill = "primary", radius = 6, paddingH = 6, paddingV = 2, align = "center" }, {
-						uiNode.label({ text = "ACTIVE", fontSize = 10, fontWeight = "bold", color = "on_primary" }),
+					then ui.row({
+						fill = "primary",
+						radius = 6,
+						paddingH = 6,
+						paddingV = 2,
+						align = "center",
+					}, {
+						ui.label({
+							text = "ACTIVE",
+							fontSize = 10,
+							fontWeight = "bold",
+							color = "on_primary",
+						}),
 					})
-					else uiNode.label({
+					else ui.label({
 						text = if isNavFocused then "⏎" else ("[" .. opt.shortcut .. "]"),
 						fontSize = 11,
 						fontWeight = if isNavFocused then "bold" else "medium",
 						color = if isNavFocused then "primary" else "on_surface_variant",
 					}),
 			}),
-			uiNode.label({
+			ui.label({
 				text = opt.description,
 				fontSize = 11,
 				color = if isNavFocused then "on_surface" else "on_surface_variant",
@@ -234,31 +258,37 @@ render = function()
 		return
 	end
 
-	local layoutCards: { any } = table.create(#LAYOUT_OPTIONS)
+	local layoutCards: { UiNode } = table.create(#LAYOUT_OPTIONS)
 	for idx, opt in ipairs(LAYOUT_OPTIONS) do
 		layoutCards[idx] = layoutCard(opt, idx)
 	end
 
-	panel.render(uiNode.column({
+	panel.render(ui.column({
 		key = "layout-panel-root",
 		flexGrow = 1,
 		gap = 12,
 		align = "stretch",
 	}, {
 		-- Header Row
-		uiNode.row({ align = "center", justify = "space_between", gap = 8 }, {
-			uiNode.row({ gap = 8, align = "center" }, {
-				uiNode.glyph({ name = "layout-grid", size = 18, color = "primary" }),
-				uiNode.label({
+		ui.row({ align = "center", justify = "space_between", gap = 8 }, {
+			ui.row({ gap = 8, align = "center" }, {
+				ui.glyph({ name = "layout-grid", size = 18, color = "primary" }),
+				ui.label({
 					text = "Select Workspace Layout",
 					fontSize = 15,
 					fontWeight = "bold",
 					color = "on_surface",
 				}),
 			}),
-			uiNode.row({ gap = 8, align = "center" }, {
-				uiNode.row({ fill = "secondary/0.2", radius = 6, paddingH = 7, paddingV = 3, align = "center" }, {
-					uiNode.label({
+			ui.row({ gap = 8, align = "center" }, {
+				ui.row({
+					fill = "secondary/0.2",
+					radius = 6,
+					paddingH = 7,
+					paddingV = 3,
+					align = "center",
+				}, {
+					ui.label({
 						text = string.format(
 							"%s • WS %s",
 							focusedMonitor,
@@ -269,28 +299,24 @@ render = function()
 						fontWeight = "bold",
 					}),
 				}),
-				uiNode.button({
-					glyph = "x",
-					variant = "ghost",
-					controlSize = "sm",
-					onClick = function()
-						panel.close()
-					end,
-				}),
 			}),
 		}),
 
 		-- Card List
-		uiNode.column({ gap = 8, align = "stretch", flexGrow = 1 }, layoutCards),
+		ui.column({ gap = 8, align = "stretch", flexGrow = 1 }, layoutCards),
 
 		-- Footer Legend
-		uiNode.row({ align = "center", justify = "space_between" }, {
-			uiNode.label({
+		ui.row({ align = "center", justify = "space_between" }, {
+			ui.label({
 				text = "[↑/↓, j/k] Navigate  •  [Enter] Apply  •  [1-4] Quick",
 				fontSize = 11,
 				color = "on_surface_variant",
 			}),
-			uiNode.label({ text = "[Esc] Cancel", fontSize = 11, color = "on_surface_variant" }),
+			ui.label({
+				text = "[Esc] Cancel",
+				fontSize = 11,
+				color = "on_surface_variant",
+			}),
 		}),
 	}))
 end
@@ -326,8 +352,9 @@ stl.lifecycle.panel(getfenv(), {
 			selectedIndex = (selectedIndex - 2 + #LAYOUT_OPTIONS) % #LAYOUT_OPTIONS + 1
 			render()
 		elseif chord == "Return" or chord == "space" then
-			if LAYOUT_OPTIONS[selectedIndex] then
-				setLayout(LAYOUT_OPTIONS[selectedIndex].id)
+			local selected = LAYOUT_OPTIONS[selectedIndex]
+			if selected then
+				setLayout(selected.id)
 			end
 		elseif chord == "1" or chord == "2" or chord == "3" or chord == "4" then
 			local idx = tonumber(chord)
@@ -350,3 +377,7 @@ stl.lifecycle.panel(getfenv(), {
 		end
 	end,
 })
+
+return {
+	render = render,
+}
