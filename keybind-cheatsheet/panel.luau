@@ -231,8 +231,11 @@ local function savePreferences()
 	end
 end
 
-local function enrichBinding(binding: Binding)
+local function enrichBinding(binding: Binding, index: number?)
 	local mods = binding.modifiers or {}
+	if not binding.id or binding.id == "" then
+		binding.id = string.format("bind_%s_%s_%d", table.concat(mods, "_"), binding.key or "none", index or 1)
+	end
 	binding._lowerMod = lower(table.concat(mods, " "))
 	binding._keyRaw = lower(binding.key or "")
 	binding._formattedKey = formatKey(binding.key)
@@ -253,7 +256,7 @@ local function applySnapshot(value: any)
 	end
 
 	bindings = type(snapshot.bindings) == "table" and snapshot.bindings or {}
-	for _, b in ipairs(bindings) do
+	for idx, b in ipairs(bindings) do
 		enrichBinding(b)
 	end
 
@@ -672,7 +675,9 @@ end
 local function hiddenBindingCount(bindingList: { Binding }, hiddenPreferences: { [string]: boolean }): number
 	local currentIds: { [string]: boolean } = {}
 	for _, binding in ipairs(bindingList or {}) do
-		currentIds[binding.id] = true
+		if binding.id then
+			currentIds[binding.id] = true
+		end
 	end
 	local count = 0
 	for id in pairs(currentIds) do
@@ -789,7 +794,8 @@ local function saveCustomDescription(binding: Binding, value: string)
 end
 
 local function bindingRow(binding: Binding, occurrence: number?): UiNode
-	local hidden = preferences.hidden[binding.id] == true
+	local bindId = binding.id or "unknown"
+	local hidden = preferences.hidden[bindId] == true
 	local contentOpacity = hidden and 0.45 or 1
 	local pills: { UiNode } = {}
 
@@ -959,7 +965,7 @@ local function categoryNode(group: CategoryGroup): UiNode
 
 	local children = headerNodes
 	local occurrences: { [string]: number } = {}
-	for _, binding in ipairs(group.bindings) do
+	for idx, binding in ipairs(group.bindings) do
 		occurrences[binding.id] = (occurrences[binding.id] or 0) + 1
 		table.insert(children, bindingRow(binding, occurrences[binding.id]))
 	end
