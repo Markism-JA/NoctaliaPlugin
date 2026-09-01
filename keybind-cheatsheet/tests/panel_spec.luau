@@ -4,6 +4,9 @@
 local testing = require("../../testing/testing.luau")
 local stl = require("../../stl/stl.luau")
 local constants = require("../constants.luau")
+local types = require("../types.luau")
+
+type SnapshotState = types.SnapshotState
 
 testing.suite("Keybind Cheatsheet: Panel View", function(b)
 	local mockHost: testing.MockHost
@@ -16,38 +19,78 @@ testing.suite("Keybind Cheatsheet: Panel View", function(b)
 		onIpc: ((event: string, payload: string) -> ())?,
 	}
 
-	local function getSampleSnapshot()
+	local function getSampleSnapshot(): SnapshotState
 		return {
+			schema = 2,
 			status = "ready",
 			compositor = "hyprland",
+			parser = "hypr-lua",
+			source = "/fake/hyprland.lua",
+			refreshing = false,
 			bindings = {
 				{
 					id = "hypr-1",
+					compositor = "hyprland",
+					bindingType = "bind",
 					modifiers = { "SUPER" },
 					key = "Return",
 					action = "exec kitty",
 					category = "Applications",
+					section = "Applications",
+					subsection = "",
 					description = "Launch Terminal",
+					sourceFile = "keybinds.lua",
+					sourceLine = 10,
+					formattedKey = "Enter",
+					keyBucket = "default",
+					modPills = { { text = "Super", bucket = "super" } },
+					displayDescription = "Launch Terminal",
+					searchIndex = "super enter launch terminal applications exec kitty",
 				},
 				{
 					id = "hypr-2",
+					compositor = "hyprland",
+					bindingType = "bind",
 					modifiers = { "SUPER", "SHIFT" },
 					key = "q",
 					action = "killactive",
 					category = "Window Management",
+					section = "Window Management",
+					subsection = "",
 					description = "",
+					sourceFile = "keybinds.lua",
+					sourceLine = 12,
+					formattedKey = "Q",
+					keyBucket = "default",
+					modPills = {
+						{ text = "Super", bucket = "super" },
+						{ text = "Shift", bucket = "shift" },
+					},
+					displayDescription = "Close Window",
+					searchIndex = "super shift q close window window management killactive",
 				},
 				{
 					id = "hypr-3",
+					compositor = "hyprland",
+					bindingType = "bind",
 					modifiers = { "SUPER" },
 					key = "d",
 					action = "spawn noctalia msg panel-toggle launcher",
 					category = "General",
+					section = "General",
+					subsection = "",
 					description = "",
+					sourceFile = "keybinds.lua",
+					sourceLine = 14,
+					formattedKey = "D",
+					keyBucket = "default",
+					modPills = { { text = "Super", bucket = "super" } },
+					displayDescription = "Application Launcher",
+					searchIndex = "super d application launcher general spawn",
 				},
 			},
 			warnings = {},
-			error = nil,
+			error = "",
 		}
 	end
 
@@ -138,9 +181,14 @@ testing.suite("Keybind Cheatsheet: Panel View", function(b)
 	b.test("displays error screen if snapshot status is 'error'", function()
 		local snapshotChannel = stl.state.channel(constants.SNAPSHOT_KEY, nil :: any)
 		snapshotChannel.set({
+			schema = 2,
 			status = "error",
 			compositor = "hyprland",
+			parser = "hypr-lua",
+			source = "",
+			refreshing = false,
 			bindings = {},
+			warnings = {},
 			error = "Hyprland configuration file missing",
 		})
 

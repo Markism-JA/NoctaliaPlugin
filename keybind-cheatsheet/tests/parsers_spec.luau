@@ -85,7 +85,7 @@ testing.suite("Keybind Cheatsheet: Parsers", function(b)
 	-- Mango Parser
 	-- =========================================================================
 
-	b.test("mango.parseContent extracts bindings and categories", function()
+	b.test("mango.parseContent extracts bindings and generates pre-baked display fields", function()
 		local content = [[
 -- = Workspace Navigation
 bind = SUPER, 1, view, 1 # "Switch to Workspace 1"
@@ -103,10 +103,17 @@ bindm = SUPER, mouse:272, movewindow
 		testing.assert.equal(b1.action, "view 1")
 		testing.assert.equal(b1.description, "Switch to Workspace 1")
 		testing.assert.equal(b1.category, "Workspace Navigation")
+		testing.assert.equal(b1.formattedKey, "1")
+		testing.assert.equal(b1.keyBucket, "number")
+		testing.assert.equal(#b1.modPills, 1)
+		testing.assert.equal(b1.modPills[1].text, "Super")
+		testing.assert.equal(b1.modPills[1].bucket, "super")
 
 		local b3 = ctx.bindings[3]
 		testing.assert.equal(b3.bindingType, "bindm")
 		testing.assert.equal(b3.key, "mouse:272")
+		testing.assert.equal(b3.formattedKey, "Mouse 272")
+		testing.assert.equal(b3.keyBucket, "mouse")
 	end)
 
 	-- =========================================================================
@@ -133,9 +140,12 @@ bindm = $mainMod, mouse:272, movewindow
 		local b1 = ctx.bindings[1]
 		testing.assert.equal(b1.compositor, "hyprland")
 		testing.assert.equal(b1.key, "Return")
+		testing.assert.equal(b1.formattedKey, "Enter")
 		testing.assert.equal(b1.action, "exec $term")
 		testing.assert.equal(b1.description, "Open terminal emulator")
 		testing.assert.equal(b1.category, "Terminal")
+		testing.assert.equal(b1.displayDescription, "Open terminal emulator")
+		testing.assert.truthy(string.find(b1.searchIndex, "enter", 1, true) ~= nil)
 	end)
 
 	-- =========================================================================
@@ -157,13 +167,14 @@ Mod+Left { focus-column-left; }
 		testing.assert.equal(b1.compositor, "niri")
 		testing.assert.equal(b1.action, "close-window")
 		testing.assert.equal(b1.category, "Window Controls")
+		testing.assert.equal(b1.displayDescription, "Close Window")
 	end)
 
 	-- =========================================================================
 	-- Hyprland JSON Decoder
 	-- =========================================================================
 
-	b.test("hyprland.parseHyprJson decodes bitmask modifiers and assigns categories", function()
+	b.test("hyprland.parseHyprJson decodes bitmask modifiers, matches needles, and pre-bakes search indices", function()
 		local rawJson = [[
         [
             {
@@ -200,13 +211,12 @@ Mod+Left { focus-column-left; }
 			category = "Applications & Launchers",
 		}
 		table.insert(scanCtx.patternRules, {
-			pattern = "^Move Window to Workspace .- %(Follow%)$",
+			literalNeedles = { "Move Window to Workspace ", " (Follow)" },
 			section = "Workspaces & Scratchpads",
 			subsection = "Workspaces 1-10",
 			category = "Workspaces & Scratchpads • Workspaces 1-10",
 		})
 
-		-- Directly invoke parseHyprJson with the real JSON string payload
 		local result, err = hyprland.parseHyprJson(rawJson, scanCtx)
 		testing.assert.isNil(err)
 		testing.assert.truthy(result ~= nil)
@@ -215,14 +225,22 @@ Mod+Left { focus-column-left; }
 			testing.assert.equal(#result, 3)
 			testing.assert.equal(result[1].modifiers[1], "SUPER")
 			testing.assert.equal(result[1].modifiers[2], "SHIFT")
+			testing.assert.equal(result[1].formattedKey, "Enter")
 			testing.assert.equal(result[1].description, "Terminal")
 			testing.assert.equal(result[1].category, "Applications & Launchers")
+			testing.assert.equal(#result[1].modPills, 2)
+			testing.assert.equal(result[1].modPills[1].text, "Super")
+			testing.assert.equal(result[1].modPills[2].text, "Shift")
 
+			-- Fallback dispatcher / keyword category assignment
 			testing.assert.equal(result[2].category, "Applications & Launchers")
+			testing.assert.equal(result[2].displayDescription, "Launch Rofi")
 
+			-- Substring needle rule assignment
 			testing.assert.equal(result[3].section, "Workspaces & Scratchpads")
 			testing.assert.equal(result[3].subsection, "Workspaces 1-10")
 			testing.assert.equal(result[3].category, "Workspaces & Scratchpads • Workspaces 1-10")
+			testing.assert.truthy(string.find(result[3].searchIndex, "workspace", 1, true) ~= nil)
 		end
 	end)
 end)

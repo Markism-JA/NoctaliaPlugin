@@ -8,6 +8,11 @@
 local stl = require("../stl/stl.luau")
 local constants = require("./constants.luau")
 local log = stl.log.scope("KeybindsPanel")
+local types = require("./types.luau")
+
+type BindingEntry = types.BindingEntry
+type SnapshotState = types.SnapshotState
+type ModifierPill = types.ModifierPill
 
 type ColorPreference = {
 	background: string?,
@@ -21,33 +26,9 @@ type Preferences = {
 	colors: { [string]: ColorPreference },
 }
 
-type Binding = {
-	id: string,
-	key: string,
-	modifiers: { string },
-	action: string,
-	category: string?,
-	description: string?,
-	compositor: string?,
-	displayIndex: number?,
-	_lowerMod: string?,
-	_keyRaw: string?,
-	_formattedKey: string?,
-	_lowerFormattedKey: string?,
-	_lowerAction: string?,
-}
-
-type Snapshot = {
-	bindings: { Binding }?,
-	warnings: { string }?,
-	compositor: string?,
-	status: string?,
-	error: string?,
-}
-
 type CategoryGroup = {
 	name: string,
-	bindings: { Binding },
+	bindings: { BindingEntry },
 	sourceOrder: number,
 	order: number,
 	weight: number,
@@ -61,18 +42,22 @@ type ColorBucket = {
 	picker: string,
 }
 
+type ColumnBucket = {
+	groups: { CategoryGroup },
+	weight: number,
+}
+
 -- State channels
 local snapshotChannel = stl.state.channel(constants.SNAPSHOT_KEY, nil :: any)
 local refreshChannel = stl.state.channel(constants.REFRESH_REQUEST_KEY, 0)
 
-local bindings: { Binding } = {}
+local bindings: { BindingEntry } = {}
 local parseWarnings: { string } = {}
 local currentCompositor = ""
 local loading = false
 local panelOpen = false
 local panelError: string? = nil
 local refreshError: string? = nil
-local snapshot: Snapshot? = nil
 local query = ""
 local searchRevision = 0
 local searchFocused = true
@@ -80,6 +65,9 @@ local view: "bindings" | "edit" | "appearance" = "bindings"
 local editingId: string? = nil
 local editDraft = ""
 local preferences: Preferences = { version = 1, hidden = {}, descriptions = {}, colors = {} }
+local cachedColumnCount: number = 3
+
+local categoryPriorityCache: { [string]: number } = {}
 
 local render: () -> ()
 local refresh: () -> ()
@@ -98,114 +86,32 @@ local function trim(s: string?): string
 	if noctalia and noctalia.string and noctalia.string.trim then
 		return noctalia.string.trim(s)
 	end
-	return s:match("^%s*(.-)%s*$") or ""
-end
-
-local function lower(value: string?): string
-	return string.lower(value or "")
-end
-
-local function startsWith(value: string, prefix: string): boolean
-	return value:sub(1, #prefix) == prefix
-end
-
-local KEY_LABELS: { [string]: string } = {
-	xf86audioraisevolume = "Vol Up",
-	xf86audiolowervolume = "Vol Down",
-	xf86audiomute = "Mute",
-	xf86audiomicmute = "Mic Mute",
-	xf86monbrightnessup = "Bright Up",
-	xf86monbrightnessdown = "Bright Down",
-	xf86audioplay = "Play/Pause",
-	xf86audiopause = "Pause",
-	xf86audionext = "Next",
-	xf86audioprev = "Previous",
-	print = "PrtSc",
-	prtsc = "PrtSc",
-	prior = "PgUp",
-	page_up = "PgUp",
-	pageup = "PgUp",
-	next = "PgDn",
-	page_down = "PgDn",
-	pagedown = "PgDn",
-	["return"] = "Enter",
-	enter = "Enter",
-	escape = "Esc",
-	esc = "Esc",
-	space = "Space",
-	backspace = "Backspace",
-	delete = "Del",
-	del = "Del",
-	insert = "Ins",
-	ins = "Ins",
-	tab = "Tab",
-	home = "Home",
-	["end"] = "End",
-	caps_lock = "CapsLock",
-	capslock = "CapsLock",
-	num_lock = "NumLock",
-	numlock = "NumLock",
-	scroll_lock = "ScrollLock",
-	scrolllock = "ScrollLock",
-	up = "↑",
-	down = "↓",
-	left = "←",
-	right = "→",
-	btn_left = "Mouse Left",
-	btn_right = "Mouse Right",
-	btn_middle = "Mouse Middle",
-	btn_side = "Mouse Side",
-	btn_extra = "Mouse Extra",
-}
-
-local MODIFIER_DISPLAY = {
-	SUPER = "Super",
-	CTRL = "Ctrl",
-	SHIFT = "Shift",
-	ALT = "Alt",
-	MOD2 = "Mod2",
-	MOD3 = "Mod3",
-	MOD5 = "Mod5",
-}
-
-local function formatKey(key: string?): string
-	if key == nil or key == "" then
-		return ""
-	end
-	local exact = KEY_LABELS[key]
-	if exact ~= nil then
-		return exact
-	end
-	local lowered = KEY_LABELS[lower(key)]
-	if lowered ~= nil then
-		return lowered
-	end
-	return (key:gsub("^mouse:", "Mouse "))
+	return string.match(s, "^%s*(.-)%s*$") or ""
 end
 
 local function normalizePreferences(decoded: any): Preferences
 	local result = { version = 1, hidden = {}, descriptions = {}, colors = {} }
-	if type(decoded) ~= "table" then
+	if typeof(decoded) ~= "table" then
 		return result
 	end
 
-	for id, hidden in pairs(type(decoded.hidden) == "table" and decoded.hidden or {}) do
-		if type(id) == "string" and hidden == true then
+	for id, hidden in pairs(typeof(decoded.hidden) == "table" and decoded.hidden or {}) do
+		if typeof(id) == "string" and hidden == true then
 			result.hidden[id] = true
 		end
 	end
-	for id, description in pairs(type(decoded.descriptions) == "table" and decoded.descriptions or {}) do
-		if type(id) == "string" and type(description) == "string" and trim(description) ~= "" then
+	for id, description in pairs(typeof(decoded.descriptions) == "table" and decoded.descriptions or {}) do
+		if typeof(id) == "string" and typeof(description) == "string" and trim(description) ~= "" then
 			result.descriptions[id] = trim(description)
 		end
 	end
-	for bucket, colors in pairs(type(decoded.colors) == "table" and decoded.colors or {}) do
-		if type(bucket) == "string" and type(colors) == "table" then
+	for bucket, colors in pairs(typeof(decoded.colors) == "table" and decoded.colors or {}) do
+		if typeof(bucket) == "string" and typeof(colors) == "table" then
 			result.colors[bucket] = {}
-			if type(colors.background) == "string" then
+			if typeof(colors.background) == "string" then
 				result.colors[bucket].background = colors.background
 			end
-			if type(colors.text) == "string" then
+			if typeof(colors.text) == "string" then
 				result.colors[bucket].text = colors.text
 			end
 		end
@@ -225,60 +131,14 @@ local function savePreferences()
 	local ok, err = stl.filesystem.writePluginData(constants.PREFERENCES_FILE, preferences, true)
 	if not ok then
 		log.error("Failed to save preferences", { err = err })
-		if noctalia.notifyError then
+		if noctalia and noctalia.notifyError then
 			noctalia.notifyError(tr("title"), err or "Could not save preferences")
 		end
 	end
 end
 
-local function enrichBinding(binding: Binding, index: number?)
-	local mods = binding.modifiers or {}
-	if not binding.id or binding.id == "" then
-		binding.id = string.format("bind_%s_%s_%d", table.concat(mods, "_"), binding.key or "none", index or 1)
-	end
-	binding._lowerMod = lower(table.concat(mods, " "))
-	binding._keyRaw = lower(binding.key or "")
-	binding._formattedKey = formatKey(binding.key)
-	binding._lowerFormattedKey = lower(binding._formattedKey)
-	binding._lowerAction = lower(binding.action or "")
-end
-
-local function applySnapshot(value: any)
-	snapshot = type(value) == "table" and value or nil
-	if snapshot == nil then
-		bindings = {}
-		parseWarnings = {}
-		currentCompositor = ""
-		loading = true
-		panelError = nil
-		refreshError = nil
-		return
-	end
-
-	bindings = type(snapshot.bindings) == "table" and snapshot.bindings or {}
-	for idx, b in ipairs(bindings) do
-		enrichBinding(b)
-	end
-
-	parseWarnings = type(snapshot.warnings) == "table" and snapshot.warnings or {}
-	currentCompositor = type(snapshot.compositor) == "string" and snapshot.compositor or ""
-	loading = (snapshot.status == "loading" or snapshot.status == "idle") and #bindings == 0
-	panelError = snapshot.status == "error" and (snapshot.error or tr("missing_config")) or nil
-	refreshError = snapshot.status == "ready"
-			and type(snapshot.error) == "string"
-			and snapshot.error ~= ""
-			and snapshot.error
-		or nil
-end
-
-refresh = function()
-	local current = tonumber(refreshChannel.get()) or 0
-	refreshChannel.set(current + 1)
-	render()
-end
-
 -- ============================================================================
--- Color Appearance & Theming Customization
+-- Color Appearance & Theming
 -- ============================================================================
 
 local COLOR_BUCKETS = {
@@ -322,45 +182,11 @@ local function colorValue(bucketId: string, property: "background" | "text"): st
 	end
 end
 
-local function bucketForKey(key: string?): string
-	local value = lower(key)
-	if startsWith(value, "xf86") then
-		return "xf86"
-	end
-	if value:match("^%d$") then
-		return "number"
-	end
-	if startsWith(value, "mouse") or startsWith(value, "btn_") or value:find("wheel", 1, true) ~= nil then
-		return "mouse"
-	end
-	if value == "print" or value == "prior" or value == "next" then
-		return "print"
-	end
-	return "default"
-end
-
-local function bucketForModifier(modifier: string): string
-	local value = lower(modifier)
-	if value == "super" or value == "mod4" or value == "logo" then
-		return "super"
-	end
-	if value == "ctrl" or value == "control" then
-		return "ctrl"
-	end
-	if value == "shift" then
-		return "shift"
-	end
-	if value == "alt" or value == "mod1" then
-		return "alt"
-	end
-	return "default"
-end
-
-local function isHexColor(value)
-	if type(value) ~= "string" then
+local function isHexColor(value: any): boolean
+	if typeof(value) ~= "string" then
 		return false
 	end
-	return value:match("^#%x%x%x%x%x%x$") ~= nil or value:match("^#%x%x%x%x%x%x%x%x$") ~= nil
+	return string.match(value, "^#%x%x%x%x%x%x$") ~= nil or string.match(value, "^#%x%x%x%x%x%x%x%x$") ~= nil
 end
 
 local function setColor(bucketId: string, property: "background" | "text", value: string)
@@ -378,8 +204,8 @@ end
 local function chooseColor(bucketId: string, property: "background" | "text")
 	local bucket = COLOR_BY_ID[bucketId] or COLOR_BY_ID.default
 	local current = colorValue(bucketId, property)
-	local initial = isHexColor(current) and current:sub(1, 7) or bucket.picker
-	if noctalia.openColorPicker then
+	local initial = isHexColor(current) and string.sub(current, 1, 7) or bucket.picker
+	if noctalia and noctalia.openColorPicker then
 		noctalia.openColorPicker(initial, function(color)
 			if color ~= nil then
 				setColor(bucketId, property, color)
@@ -389,14 +215,40 @@ local function chooseColor(bucketId: string, property: "background" | "text")
 end
 
 local function pasteColor(bucketId: string, property: "background" | "text")
-	local value = trim(noctalia.clipboardText and noctalia.clipboardText() or "")
+	local value = trim(noctalia and noctalia.clipboardText and noctalia.clipboardText() or "")
 	if isHexColor(value) then
 		setColor(bucketId, property, string.upper(value))
 	else
-		if noctalia.notifyError then
+		if noctalia and noctalia.notifyError then
 			noctalia.notifyError(tr("title"), "Clipboard does not contain a #RRGGBB color")
 		end
 	end
+end
+
+local function applySnapshot(value: any)
+	local snap = typeof(value) == "table" and (value :: SnapshotState) or nil
+	if snap == nil then
+		bindings = {}
+		parseWarnings = {}
+		currentCompositor = ""
+		loading = true
+		panelError = nil
+		refreshError = nil
+		return
+	end
+
+	bindings = typeof(snap.bindings) == "table" and snap.bindings or {}
+	parseWarnings = typeof(snap.warnings) == "table" and snap.warnings or {}
+	currentCompositor = typeof(snap.compositor) == "string" and snap.compositor or ""
+	loading = (snap.status == "loading" or snap.status == "idle") and #bindings == 0
+	panelError = snap.status == "error" and (snap.error or tr("missing_config")) or nil
+	refreshError = snap.status == "ready" and typeof(snap.error) == "string" and snap.error ~= "" and snap.error or nil
+end
+
+refresh = function()
+	local current = tonumber(refreshChannel.get()) or 0
+	refreshChannel.set(current + 1)
+	render()
 end
 
 local function keyPill(text: string, bucketId: string, key: string): UiNode
@@ -413,155 +265,6 @@ local function keyPill(text: string, bucketId: string, key: string): UiNode
 	})
 end
 
-local function authoredDescription(binding: Binding): string
-	return preferences.descriptions[binding.id] or binding.description or ""
-end
-
-local function titleCase(value: string): string
-	local clean = (trim(value):gsub("[_%-]+", " "))
-	return (
-		clean:gsub("%a[%w']*", function(word: string): string
-			return string.upper(word:sub(1, 1)) .. lower(word:sub(2))
-		end)
-	)
-end
-
-local function friendlySpawn(commandLine: string): string
-	local value = lower(trim(commandLine))
-	if value:find("noctalia msg panel-toggle launcher", 1, true) ~= nil then
-		return "Application Launcher"
-	end
-	if value:find("noctalia msg panel-toggle session", 1, true) ~= nil then
-		return "Power Menu"
-	end
-	if value:find("noctalia msg session lock", 1, true) ~= nil then
-		return "Lock Screen"
-	end
-	if value:find("playerctl play-pause", 1, true) ~= nil then
-		return "Play / Pause"
-	end
-	if value:find("playerctl next", 1, true) ~= nil then
-		return "Next Track"
-	end
-	if value:find("playerctl previous", 1, true) ~= nil then
-		return "Previous Track"
-	end
-	if value:find("playerctl stop", 1, true) ~= nil then
-		return "Stop Playback"
-	end
-	if value:find("wpctl set-volume", 1, true) ~= nil then
-		return value:find("+", 1, true) ~= nil and "Volume Up" or "Volume Down"
-	end
-	if value:find("wpctl set-mute", 1, true) ~= nil then
-		return value:find("source", 1, true) ~= nil and "Toggle Microphone Mute" or "Toggle Mute"
-	end
-	if value:find("brightnessctl", 1, true) ~= nil then
-		return value:find("+", 1, true) ~= nil and "Brightness Up" or "Brightness Down"
-	end
-
-	local program = trim(commandLine):match("^([^%s]+)") or "Application"
-	program = program:match("([^/]+)$") or program
-	local programs: { [string]: string } = {
-		alacritty = "Terminal",
-		chromium = "Browser",
-		dolphin = "File Manager",
-		firefox = "Browser",
-		foot = "Terminal",
-		kitty = "Terminal",
-		nautilus = "File Manager",
-		thunar = "File Manager",
-	}
-	return programs[lower(program)] or ("Launch " .. titleCase(program))
-end
-
-local ACTION_LABELS: { [string]: string } = {
-	close_window = "Close Window",
-	killactive = "Close Window",
-	killclient = "Close Window",
-	minimized = "Minimize Window",
-	quit = "Exit Compositor",
-	reload_config = "Reload Configuration",
-	restore_minimized = "Restore Minimized Window",
-	switch_proportion_preset = "Cycle Width Preset",
-	toggle_named_scratchpad = "Toggle Scratchpad",
-	togglefakefullscreen = "Toggle Fake Fullscreen",
-	togglefloating = "Toggle Floating",
-	togglefullscreen = "Toggle Fullscreen",
-	togglegaps = "Toggle Gaps",
-	toggleglobal = "Toggle Global Window",
-	togglemaximizescreen = "Toggle Maximize",
-	toggleoverlay = "Toggle Overlay",
-	toggleoverview = "Workspace Overview",
-}
-
-local function friendlyAction(binding: Binding): string
-	local action = trim(binding.action)
-	local command, arguments = action:match("^(%S+)%s*(.*)$")
-	command = lower(command or ""):gsub("%-", "_")
-	arguments = trim(arguments or "")
-	if command == "spawn" or command == "spawn_shell" or command == "exec" then
-		return friendlySpawn(arguments)
-	end
-	if ACTION_LABELS[command] ~= nil then
-		return ACTION_LABELS[command]
-	end
-
-	local argument = arguments:match("^([^,%s]+)") or ""
-	local direction = argument ~= "" and titleCase(argument) or ""
-	if command == "focusdir" or command == "movefocus" then
-		return "Focus " .. direction
-	end
-	if command == "exchange_client" or command == "movewindow" then
-		return "Move Window " .. direction
-	end
-	if command == "focusmon" then
-		return "Focus Monitor " .. direction
-	end
-	if command == "tagmon" then
-		return "Move to Monitor " .. direction
-	end
-	if command == "scroller_stack" then
-		return "Move Within Stack " .. direction
-	end
-	if command == "view" or command == "workspace" then
-		return "Workspace " .. argument
-	end
-	if command == "tag" or command == "movetoworkspace" then
-		return "Send to Workspace " .. argument
-	end
-	if command == "viewtoleft" or command == "viewtoleft_have_client" then
-		return "Previous Workspace"
-	end
-	if command == "viewtoright" or command == "viewtoright_have_client" then
-		return "Next Workspace"
-	end
-	if command == "setlayout" then
-		return titleCase(argument) .. " Layout"
-	end
-	if command == "set_proportion" then
-		return "Set Window Proportion " .. argument
-	end
-	if command == "setmfact" then
-		return "Set Layout Size " .. argument
-	end
-	if command == "moveresize" then
-		return arguments:find("curresize", 1, true) ~= nil and "Resize Window with Mouse" or "Move Window with Mouse"
-	end
-	return titleCase(action)
-end
-
-local function effectiveDescription(binding: Binding): string
-	local description = authoredDescription(binding)
-	return description ~= "" and description or friendlyAction(binding)
-end
-
-local function effectiveCategory(binding: Binding): string
-	if binding.category ~= nil and binding.category ~= "" and binding.category ~= "General" then
-		return binding.category
-	end
-	return tr("other")
-end
-
 local SEARCH_MODIFIER_ALIASES: { [string]: string } = {
 	win = "super",
 	logo = "super",
@@ -572,53 +275,27 @@ local SEARCH_MODIFIER_ALIASES: { [string]: string } = {
 }
 
 local function splitQueryTokens(rawQuery: string): { string }
-	local clean = lower(rawQuery):gsub("[%+%-%%,_|]+", " ")
+	local clean = string.gsub(string.lower(rawQuery), "[%+%-%%,_|]+", " ")
 	local tokens = {}
-	for token in clean:gmatch("%S+") do
+	for token in string.gmatch(clean, "%S+") do
 		table.insert(tokens, SEARCH_MODIFIER_ALIASES[token] or token)
 	end
 	return tokens
 end
 
-local function bindingMatches(binding: Binding, tokens: { string }): boolean
+-- Fast single-index raw substring check
+local function bindingMatches(binding: BindingEntry, tokens: { string }): boolean
 	if #tokens == 0 then
 		return true
 	end
-
-	local modStr = binding._lowerMod or ""
-	local keyRaw = binding._keyRaw or ""
-	local keyFormatted = binding._lowerFormattedKey or ""
-	local descStr = lower(effectiveDescription(binding))
-	local catStr = lower(effectiveCategory(binding))
-	local actionStr = binding._lowerAction or ""
-
+	local target = binding.searchIndex
 	for _, token in ipairs(tokens) do
-		local matched = false
-		if modStr:find(token, 1, true) then
-			matched = true
-		elseif
-			keyRaw == token
-			or keyFormatted == token
-			or startsWith(keyRaw, token)
-			or startsWith(keyFormatted, token)
-		then
-			matched = true
-		elseif descStr:find(token, 1, true) then
-			matched = true
-		elseif catStr:find(token, 1, true) then
-			matched = true
-		elseif #token >= 3 and actionStr:find(token, 1, true) then
-			matched = true
-		end
-
-		if not matched then
+		if string.find(target, token, 1, true) == nil then
 			return false
 		end
 	end
 	return true
 end
-
-type CategoryPriorityEntry = { string | number } -- or struct table
 
 local CATEGORY_PRIORITIES: { { [number]: any } } = {
 	{ "applications", 10 },
@@ -637,21 +314,20 @@ local CATEGORY_PRIORITIES: { { [number]: any } } = {
 	{ "touchpad", 90 },
 	{ "gesture", 90 },
 	{ "integration", 100 },
-	{ lower(tr("without_description")), 900 },
-	{ lower(tr("other")), 950 },
+	{ string.lower(tr("without_description")), 900 },
+	{ string.lower(tr("other")), 950 },
 }
 
-local categoryPriorityCache: { [string]: number } = {}
 local function categoryPriority(name: string): number
 	local cached = categoryPriorityCache[name]
 	if cached then
 		return cached
 	end
 
-	local value = lower(name)
+	local value = string.lower(name)
 	local score = 500
 	for _, entry in ipairs(CATEGORY_PRIORITIES) do
-		if value:find(entry[1], 1, true) ~= nil then
+		if string.find(value, entry[1], 1, true) ~= nil then
 			score = entry[2]
 			break
 		end
@@ -672,23 +348,17 @@ local function bindingAvailableInView(
 	return not hidden and (showUndescribed or not undescribed)
 end
 
-local function hiddenBindingCount(bindingList: { Binding }, hiddenPreferences: { [string]: boolean }): number
-	local currentIds: { [string]: boolean } = {}
-	for _, binding in ipairs(bindingList or {}) do
-		if binding.id then
-			currentIds[binding.id] = true
-		end
-	end
+local function hiddenBindingCount(bindingList: { BindingEntry }, hiddenPreferences: { [string]: boolean }): number
 	local count = 0
-	for id in pairs(currentIds) do
-		if hiddenPreferences[id] == true then
+	for _, binding in ipairs(bindingList or {}) do
+		if binding.id and hiddenPreferences[binding.id] == true then
 			count += 1
 		end
 	end
 	return count
 end
 
-local function restoreHiddenBindings(bindingList: { Binding }, hiddenPreferences: { [string]: boolean })
+local function restoreHiddenBindings(bindingList: { BindingEntry }, hiddenPreferences: { [string]: boolean })
 	for _, binding in ipairs(bindingList or {}) do
 		hiddenPreferences[binding.id] = nil
 	end
@@ -700,15 +370,21 @@ local function visibleGroups(): { CategoryGroup }
 	local groups: { CategoryGroup } = {}
 	local byName: { [string]: CategoryGroup } = {}
 
-	local tokens = splitQueryTokens(query)
+	local tokens = if query ~= "" then splitQueryTokens(query) else {}
 
 	for index, binding in ipairs(bindings) do
 		local hidden = preferences.hidden[binding.id] == true
-		local undescribed = authoredDescription(binding) == "" and binding.compositor ~= "niri"
+		local undescribed = (binding.description == "" and preferences.descriptions[binding.id] == nil)
+			and binding.compositor ~= "niri"
+
 		if
-			bindingAvailableInView(hidden, undescribed, managing, showUndescribed) and bindingMatches(binding, tokens)
+			bindingAvailableInView(hidden, undescribed, managing, showUndescribed)
+			and bindingMatches(binding, tokens)
 		then
-			local category = effectiveCategory(binding)
+			local category = if binding.category ~= "" and binding.category ~= "General"
+				then binding.category
+				else tr("other")
+
 			local group = byName[category]
 			if group == nil then
 				group = { name = category, bindings = {}, sourceOrder = #groups + 1, order = 0, weight = 1 }
@@ -736,10 +412,10 @@ local function visibleGroups(): { CategoryGroup }
 	return groups
 end
 
-local function columnCount(): number
+local function updateColumnCountCache()
 	local configured = math.clamp(stl.config.getNumber("columns", 3), 1, 4)
 	local outputWidth = 1920
-	if noctalia.focusedOutputName and noctalia.outputs then
+	if noctalia and noctalia.focusedOutputName and noctalia.outputs then
 		local focused = noctalia.focusedOutputName()
 		for _, output in ipairs(noctalia.outputs()) do
 			if output.name == focused or output.focused then
@@ -749,13 +425,8 @@ local function columnCount(): number
 		end
 	end
 	local responsive = outputWidth < 760 and 1 or (outputWidth < 1100 and 2 or (outputWidth < 1500 and 3 or 4))
-	return math.min(configured, responsive)
+	cachedColumnCount = math.min(configured, responsive)
 end
-
-type ColumnBucket = {
-	groups: { CategoryGroup },
-	weight: number,
-}
 
 local function balancedColumns(groups: { CategoryGroup }, count: number): { ColumnBucket }
 	local columns: { ColumnBucket } = {}
@@ -780,7 +451,7 @@ local function balancedColumns(groups: { CategoryGroup }, count: number): { Colu
 	return columns
 end
 
-local function saveCustomDescription(binding: Binding, value: string)
+local function saveCustomDescription(binding: BindingEntry, value: string)
 	value = trim(value)
 	if value == "" or value == binding.description then
 		preferences.descriptions[binding.id] = nil
@@ -793,19 +464,18 @@ local function saveCustomDescription(binding: Binding, value: string)
 	render()
 end
 
-local function bindingRow(binding: Binding, occurrence: number?): UiNode
+local function bindingRow(binding: BindingEntry, occurrence: number?): UiNode
 	local bindId = binding.id or "unknown"
 	local hidden = preferences.hidden[bindId] == true
 	local contentOpacity = hidden and 0.45 or 1
 	local pills: { UiNode } = {}
 
-	for index, modifier in ipairs(binding.modifiers) do
-		local modDisplay = MODIFIER_DISPLAY[modifier] or (modifier:sub(1, 1) .. lower(modifier:sub(2)))
-		table.insert(pills, keyPill(modDisplay, bucketForModifier(modifier), "mod-" .. index))
+	for index, pill in ipairs(binding.modPills) do
+		table.insert(pills, keyPill(pill.text, pill.bucket, "mod-" .. index))
 	end
-	table.insert(pills, keyPill(binding._formattedKey or formatKey(binding.key), bucketForKey(binding.key), "key"))
+	table.insert(pills, keyPill(binding.formattedKey, binding.keyBucket, "key"))
 
-	local description = effectiveDescription(binding)
+	local description = preferences.descriptions[binding.id] or binding.displayDescription
 	local identity = binding.id .. "#" .. (occurrence or 1)
 
 	if view == "edit" and editingId == identity then
@@ -932,7 +602,7 @@ local function bindingRow(binding: Binding, occurrence: number?): UiNode
 end
 
 local function categoryNode(group: CategoryGroup): UiNode
-	local mainSection, subSection = group.name:match("^(.-)%s*•%s*(.+)$")
+	local mainSection, subSection = string.match(group.name, "^(.-)%s*•%s*(.+)$")
 	local headerNodes: { UiNode } = {}
 
 	if mainSection and subSection then
@@ -940,7 +610,7 @@ local function categoryNode(group: CategoryGroup): UiNode
 			headerNodes,
 			ui.row({ gap = 6, align = "center" }, {
 				ui.label({
-					text = mainSection:upper(),
+					text = string.upper(mainSection),
 					color = "on_surface_variant",
 					fontSize = 11,
 					fontWeight = "bold",
@@ -965,7 +635,7 @@ local function categoryNode(group: CategoryGroup): UiNode
 
 	local children = headerNodes
 	local occurrences: { [string]: number } = {}
-	for idx, binding in ipairs(group.bindings) do
+	for _, binding in ipairs(group.bindings) do
 		occurrences[binding.id] = (occurrences[binding.id] or 0) + 1
 		table.insert(children, bindingRow(binding, occurrences[binding.id]))
 	end
@@ -981,7 +651,7 @@ local function bindingsBody(): UiNode
 			ui.label({ text = tr("no_results"), color = "on_surface_variant" }),
 		})
 	end
-	local columns = balancedColumns(groups, columnCount())
+	local columns = balancedColumns(groups, cachedColumnCount)
 	local columnNodes: { UiNode } = {}
 	for index, column in ipairs(columns) do
 		local categoryNodes: { UiNode } = {}
@@ -1277,12 +947,14 @@ render = function()
 		table.insert(children, bindingsBody())
 	end
 
-	panel.render(ui.column({
+	local node = ui.column({
 		key = "keybind-cheatsheet-" .. contentState,
 		flexGrow = 1,
 		gap = 8,
 		align = "stretch",
-	}, children))
+	}, children)
+
+	panel.render(node)
 end
 
 -- Watch state snapshot updates
@@ -1304,6 +976,7 @@ stl.lifecycle.panel(getfenv(), {
 		editingId = nil
 		editDraft = ""
 		loadPreferences()
+		updateColumnCountCache()
 		applySnapshot(snapshotChannel.get())
 		render()
 	end,

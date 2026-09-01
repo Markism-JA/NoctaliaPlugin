@@ -9,6 +9,7 @@ local common = require("./common.luau")
 type BindingEntry = types.BindingEntry
 type ParseContext = types.ParseContext
 type ScanRule = types.ScanRule
+type PatternRule = types.PatternRule
 type JsonDecodeFn = types.JsonDecodeFn
 
 local hyprland = {}
@@ -89,7 +90,7 @@ function hyprland.parseConfContent(content: string, sourceFile: string, context:
 	end
 end
 
---- Scans Lua configuration AST literals and dynamic patterns
+--- Scans Lua configuration AST literals and dynamic patterns into literal substring needles
 function hyprland.scanLuaContent(content: string, context: ParseContext)
 	local currentSection = "General"
 	local currentSubsection = ""
@@ -118,15 +119,16 @@ function hyprland.scanLuaContent(content: string, context: ParseContext)
 					or string.match(line, "desc%s*=%s*(.-)[,}]")
 
 				if descChunk then
-					local parts: { string } = {}
+					local needles: { string } = {}
 					for strLit in string.gmatch(descChunk, "[\"']([^\"']+)[\"']") do
-						local escaped = string.gsub(strLit, "([%(%)%.%%%+%-%*%?%[%]%^%$])", "%%%1")
-						table.insert(parts, escaped)
+						if strLit ~= "" then
+							table.insert(needles, strLit)
+						end
 					end
 
-					if #parts > 0 then
+					if #needles > 0 then
 						table.insert(context.patternRules, {
-							pattern = "^" .. table.concat(parts, ".-") .. "$",
+							literalNeedles = needles,
 							section = currentSection,
 							subsection = currentSubsection,
 							category = common.buildCategory(currentSection, currentSubsection),
@@ -200,6 +202,7 @@ function hyprland.scanHyprLua(rootPath: string): ParseContext
 	return context
 end
 
+--- Synchronously parses hyprctl JSON output using fast needle scans
 function hyprland.parseHyprJson(raw: string, scanContext: ParseContext): ({ BindingEntry }?, string?)
 	local decoded: { { [string]: any } }?, err = stl.codec.jsonDecode(raw)
 	if typeof(decoded) ~= "table" or not decoded then
@@ -232,10 +235,24 @@ function hyprland.parseHyprJson(raw: string, scanContext: ParseContext): ({ Bind
 				end
 
 				local rule: ScanRule? = scanContext.exactRules[description]
+
+				-- Fast-path multi-needle substring check (Zero Regex Backtracking)
 				if not rule and patternRuleCount > 0 and description ~= "" then
 					for i = 1, patternRuleCount do
 						local pRule = scanContext.patternRules[i]
-						if string.find(description, pRule.pattern) ~= nil then
+						local allMatched = true
+						local lastIdx = 1
+
+						for _, needle in ipairs(pRule.literalNeedles) do
+							local foundStart, foundEnd = string.find(description, needle, lastIdx, true)
+							if not foundStart then
+								allMatched = false
+								break
+							end
+							lastIdx = (foundEnd :: number) + 1
+						end
+
+						if allMatched then
 							rule = {
 								section = pRule.section,
 								subsection = pRule.subsection,

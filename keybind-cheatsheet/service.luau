@@ -1,10 +1,10 @@
 --!strict
 -- Orchestration service for Mango, Hyprland, and Niri keybinds
 
-local lifecycle = require("../stl/lifecycle.luau")
 local stl = require("../stl/stl.luau")
 local config = stl.config
 local filesystem = stl.filesystem
+local lifecycle = stl.lifecycle
 local hostBridge = require("../stl/host.luau")
 local log = stl.log.scope("KeybindService")
 local proc = stl.proc
@@ -12,6 +12,7 @@ local state = stl.state
 
 local types = require("./types.luau")
 local cache = require("./cache.luau")
+local constants = require("./constants.luau")
 local hyprlandParser = require("./parsers/hyprland.luau")
 local mangoParser = require("./parsers/mango.luau")
 local niriParser = require("./parsers/niri.luau")
@@ -33,8 +34,6 @@ service.scanHyprLua = hyprlandParser.scanHyprLua
 -- State & Configuration Channels
 -- =============================================================================
 
-local SNAPSHOT_KEY = "keybind-cheatsheet.snapshot"
-local REFRESH_REQUEST_KEY = "keybind-cheatsheet.refresh-request"
 local MAX_SCAN_DEPTH = 3
 local MAX_FILE_SIZE_BYTES = 262144
 
@@ -60,13 +59,14 @@ local defaultSnapshot: SnapshotState = {
 	refreshing = true,
 }
 
-local snapshotChannel = state.channel(SNAPSHOT_KEY, defaultSnapshot)
-local refreshRequestChannel = state.channel(REFRESH_REQUEST_KEY, 0)
+local snapshotChannel = state.channel(constants.SNAPSHOT_KEY, defaultSnapshot)
+local refreshRequestChannel = state.channel(constants.REFRESH_REQUEST_KEY, 0)
 
 local refreshing = false
 local refreshQueued = false
 local refreshGeneration = 0
 local lastGood: CachePayload? = nil
+local lastPublishedSignature: string = ""
 
 -- =============================================================================
 -- Helpers & Detection
@@ -219,8 +219,18 @@ function service.walkConfig(
 end
 
 -- =============================================================================
--- State Pipeline & Refresh
+-- State Pipeline & Fast Deduplication
 -- =============================================================================
+
+local function computeSignature(
+	status: string,
+	compositor: string,
+	bindingCount: number,
+	err: string?,
+	isRefreshing: boolean
+): string
+	return table.concat({ status, compositor, tostring(bindingCount), err or "", tostring(isRefreshing) }, "|")
+end
 
 local function publish(
 	status: "ready" | "loading" | "error",
@@ -229,6 +239,16 @@ local function publish(
 	err: string?,
 	isRefreshing: boolean
 )
+	local bindingsList = if cachePayload then cachePayload.bindings else {}
+	local signature =
+		computeSignature(status, if request then request.compositor else "", #bindingsList, err, isRefreshing)
+
+	-- Guard against redundant state updates
+	if signature == lastPublishedSignature and not isRefreshing then
+		return
+	end
+	lastPublishedSignature = signature
+
 	snapshotChannel.set({
 		schema = 2,
 		status = status,
@@ -236,7 +256,7 @@ local function publish(
 		parser = if request then request.parser else "",
 		source = if request then request.root else "",
 		request = request,
-		bindings = if cachePayload then cachePayload.bindings else {},
+		bindings = bindingsList,
 		warnings = if cachePayload then cachePayload.warnings else {},
 		error = err or "",
 		refreshing = isRefreshing == true,
@@ -252,7 +272,6 @@ local function finishRefresh(
 	sourceSnapshot: ParseContext?
 )
 	if generation ~= refreshGeneration then
-		log.warn("finishRefresh aborted: generation mismatch", { gen = generation, expected = refreshGeneration })
 		return
 	end
 	refreshing = false
@@ -279,7 +298,7 @@ local function refreshHyprLua(generation: number, request: BindingRequest)
 		return
 	end
 
-	-- 1. Scan config files on disk in the CURRENT invocation tick (before async command dispatch)
+	-- Scan config files on disk in the current execution tick
 	local scanOk, scanOrErr = pcall(function()
 		return hyprlandParser.scanHyprLua(request.root)
 	end)
@@ -298,7 +317,7 @@ local function refreshHyprLua(generation: number, request: BindingRequest)
 		return
 	end
 
-	-- 2. Dispatch hyprctl asynchronously; callback tick ONLY does JSON decode & rule assignment
+	-- Query runtime binds via hyprctl; execution callback runs on a fresh VM slice
 	proc.exec({ "hyprctl", "binds", "-j" }, function(err, stdout, _exitCode)
 		if generation ~= refreshGeneration then
 			return
@@ -376,6 +395,7 @@ end
 
 -- =============================================================================
 -- Lifecycle Hooks & State Subscriptions
+-- =============================================================================
 
 lifecycle.service(getfenv(), {
 	onEnable = function()
@@ -398,11 +418,13 @@ lifecycle.service(getfenv(), {
 	end,
 })
 
--- Watch state for external refresh requests (e.g. from panel/widget IPC)
+-- Guarded state subscription for refresh requests
 refreshRequestChannel.watch(function(_req: any)
-	pcall(function()
-		service.refresh(nil)
-	end)
+	if not refreshing then
+		pcall(function()
+			service.refresh(nil)
+		end)
+	end
 end)
 
 -- Automatic startup bootstrap when evaluating inside an active host
