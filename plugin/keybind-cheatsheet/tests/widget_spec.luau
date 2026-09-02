@@ -1,8 +1,8 @@
 --!strict
 --- Test specification for the bar widget entrypoint.
 
-local testing = require("../../testing/testing.luau")
-local stl = require("../../stl/stl.luau")
+local testing = require("../../../lib/testing/testing.luau")
+local stl = require("../../../lib/stl/stl.luau")
 local constants = require("../constants.luau")
 
 testing.suite("Keybind Cheatsheet: Bar Widget", function(b)

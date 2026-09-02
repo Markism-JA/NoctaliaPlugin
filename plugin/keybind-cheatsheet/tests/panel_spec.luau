@@ -1,8 +1,8 @@
 --!strict
 --- Test specification for the snapshot-driven Keybind Cheatsheet Panel.
 
-local testing = require("../../testing/testing.luau")
-local stl = require("../../stl/stl.luau")
+local testing = require("../../../lib/testing/testing.luau")
+local stl = require("../../../lib/stl/stl.luau")
 local constants = require("../constants.luau")
 local types = require("../types.luau")
 

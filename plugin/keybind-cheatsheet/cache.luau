@@ -1,7 +1,7 @@
 --!strict
 -- Durable disk cache & freshness validation for keybind-cheatsheet
 
-local stl = require("../stl/stl.luau")
+local stl = require("../../lib/stl/stl.luau")
 local filesystem = stl.filesystem
 local log = stl.log.scope("KeybindCache")
 local types = require("./types.luau")

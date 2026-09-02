@@ -1,7 +1,7 @@
 --!strict
 -- Declarative Bar Widget: Screen-Isolated Topology Subscriber
 
-local stl = require("../stl/stl.luau")
+local stl = require("../../lib/stl/stl.luau")
 local constants = require("./constants.luau")
 local types = require("./types.luau")
 

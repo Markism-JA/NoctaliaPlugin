@@ -1,7 +1,7 @@
 --!strict
 --- Unit tests for durable cache serialization and freshness tracking.
 
-local testing = require("../../testing/testing.luau")
+local testing = require("../../../lib/testing/testing.luau")
 local types = require("../../keybind-cheatsheet/types.luau")
 local cache = require("../../keybind-cheatsheet/cache.luau")
 

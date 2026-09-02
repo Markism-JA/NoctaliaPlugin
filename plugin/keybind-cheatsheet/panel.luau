@@ -5,7 +5,7 @@
 -- panel only reads the shared snapshot and renders it.
 -- Hierarchical category presentation.
 
-local stl = require("../stl/stl.luau")
+local stl = require("../../lib/stl/stl.luau")
 local constants = require("./constants.luau")
 local log = stl.log.scope("KeybindsPanel")
 local types = require("./types.luau")

@@ -1,11 +1,11 @@
 --!strict
 -- Orchestration service for Mango, Hyprland, and Niri keybinds
 
-local stl = require("../stl/stl.luau")
+local stl = require("../../lib/stl/stl.luau")
 local config = stl.config
 local filesystem = stl.filesystem
 local lifecycle = stl.lifecycle
-local hostBridge = require("../stl/host.luau")
+local hostBridge = require("../../lib/stl/host.luau")
 local log = stl.log.scope("KeybindService")
 local proc = stl.proc
 local state = stl.state

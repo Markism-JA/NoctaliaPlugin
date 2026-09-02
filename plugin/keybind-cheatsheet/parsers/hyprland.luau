@@ -1,7 +1,7 @@
 --!strict
 -- Parser and AST extractor for Hyprland (.lua / .conf / hyprctl JSON)
 
-local stl = require("../../stl/stl.luau")
+local stl = require("../../../lib/stl/stl.luau")
 local filesystem = stl.filesystem
 local types = require("../types.luau")
 local common = require("./common.luau")

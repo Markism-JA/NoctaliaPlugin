@@ -1,7 +1,7 @@
 --!strict
 --- Unit tests for isolated format parsers: Common, Mango, Hyprland, Niri.
 
-local testing = require("../../testing/testing.luau")
+local testing = require("../../../lib/testing/testing.luau")
 local types = require("../../keybind-cheatsheet/types.luau")
 local common = require("../../keybind-cheatsheet/parsers/common.luau")
 local mango = require("../../keybind-cheatsheet/parsers/mango.luau")

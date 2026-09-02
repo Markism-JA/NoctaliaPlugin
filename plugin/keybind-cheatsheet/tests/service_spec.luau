@@ -1,8 +1,8 @@
 --!strict
 --- Integration and lifecycle tests for Keybind Data Service Orchestration.
 
-local testing = require("../../testing/testing.luau")
-local stl = require("../../stl/stl.luau")
+local testing = require("../../../lib/testing/testing")
+local stl = require("../../../lib/stl/stl.luau")
 local constants = require("../../keybind-cheatsheet/constants.luau")
 local service = require("../../keybind-cheatsheet/service.luau")
 

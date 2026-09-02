@@ -1,7 +1,7 @@
 --!strict
 -- Static, event-only bar entry.
 
-local stl = require("../stl/stl.luau")
+local stl = require("../../lib/stl/stl.luau")
 local constants = require("./constants.luau")
 
 local refreshChannel = stl.state.channel(constants.REFRESH_REQUEST_KEY, 0)
