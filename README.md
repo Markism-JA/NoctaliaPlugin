@@ -47,6 +47,8 @@ The upstream plugin used a flat category layout, brittle module tracing via `req
 
 </p>
 
+![Layout Switcher Panel](docs/figures/layout-switcher-panel-showcase.png)
+
 The upstream plugin tracked a single global layout string, causing multi-monitor setups to desync when different workspaces ran different layouts. It also lacked a picker UI and relied on coarse polling. This refactor introduces per-monitor tracking, an interactive picker panel, and zero-allocation state diffing over `STL`.
 
 - Replaces the shared `"layout"` state key with a structured `hypr.topology` map. The background service queries both `monitors -j` and `workspaces -j`, ensuring each display’s bar widget reflects its own workspace layout rather than an arbitrary global state.
@@ -234,6 +236,8 @@ This configuration enables `luau-lsp` and `luau-analyze` to resolve module types
 
 ##### How to Use the Test CLI
 
+![Test CLI](docs/figures/test-runner-showcase.png)
+
 The test runner (`test_cli.luau`) automates spec discovery, isolates module execution, and provides diagnostic filtering.
 
 ###### Spec Naming Convention & Discovery
@@ -287,6 +291,8 @@ Reference configurations:
 - TOML Manifest Validation: [lua/plugins/toml.lua](https://github.com/Markism-JA/nvim/blob/master/lua/plugins/toml.lua)
 
 #### Luau LSP & Ambient Type Injection
+
+![LSP Preview](docs/figures/output.gif)
 
 Luau does not natively auto-load multiple sibling definition files located inside a directory unless they are explicitly referenced or mapped.
 
