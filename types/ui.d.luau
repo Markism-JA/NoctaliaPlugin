@@ -1,4 +1,4 @@
---!nocheck
+--!strict
 -- =============================================================================
 -- Noctalia Declarative Virtual UI Framework (ui.*)
 -- =============================================================================
@@ -8,6 +8,67 @@ export type UiNode = any
 
 --- Callback identifier. Accepts either a direct closure or the global name of a script function.
 export type UiCallback = string | ((...any) -> ())
+
+--- Alignment of items along the cross axis inside a flex container.
+--- - `"start"`: Packs items flush to the cross-axis start edge.
+--- - `"center"`: Centers items along the cross axis.
+--- - `"end"`: Packs items flush to the cross-axis finish edge.
+--- - `"stretch"`: Stretches items to occupy the full container cross axis.
+export type UiAlign = "start" | "center" | "end" | "stretch"
+
+--- Distribution of items along the main layout axis inside a flex container.
+--- - `"start"`: Items packed toward the start line.
+--- - `"center"`: Items packed along the center line.
+--- - `"end"`: Items packed toward the finish line.
+--- - `"space_between"`: Even distribution; first item at start, last item at finish.
+--- - `"space_around"`: Even distribution with half-size space before first and after last.
+--- - `"space_evenly"`: Even distribution with equal spacing between items and container edges.
+export type UiJustify = "start" | "center" | "end" | "space_between" | "space_around" | "space_evenly"
+
+--- Standardized height and padding sizing tier for interactive controls.
+--- - `"sm"`: Compact control height (32px).
+--- - `"md"`: Standard control height (38px).
+--- - `"lg"`: Prominent control height (44px).
+export type UiControlSize = "sm" | "md" | "lg"
+
+--- Visual appearance tier and semantic role for push buttons.
+--- - `"default"`: Subtle filled tonal surface.
+--- - `"primary"`: High-emphasis accent color role.
+--- - `"secondary"`: Medium-emphasis container role.
+--- - `"destructive"`: Error/warning colored role indicating destructive consequences.
+--- - `"outline"`: Transparent fill framed by an outline stroke.
+--- - `"ghost"`: Frameless transparent surface highlighting only on hover or focus.
+export type UiButtonVariant = "default" | "primary" | "secondary" | "destructive" | "outline" | "ghost"
+
+--- Horizontal alignment of text runs within a bounded container or button.
+--- - `"start"`: Left-aligned for LTR typography, right-aligned for RTL typography.
+--- - `"center"`: Centered horizontally.
+--- - `"end"`: Right-aligned for LTR typography, left-aligned for RTL typography.
+export type UiTextAlign = "start" | "center" | "end"
+
+--- Typographic font weight tier name or custom font numeric face weight.
+--- Predefined weights map to: `"thin"` (100), `"light"` (300), `"normal"` (400),
+--- `"medium"` (500), `"bold"` (700), `"heavy"` (800), and `"black"` (900).
+export type UiFontWeight = "thin" | "light" | "normal" | "medium" | "bold" | "black" | "heavy" | string
+
+--- Metric baseline alignment mode for typography rendering.
+--- - `"text"`: Standard font alphabetic baseline.
+--- - `"textFixedHeight"`: Fixed line-height container metrics.
+--- - `"inkCentered"`: Centered strictly based on pixel glyph bounding boxes.
+--- - `"pictographic"`: Ideographic/pictographic baseline optimized for icon alignment.
+export type UiBaseline = "text" | "textFixedHeight" | "inkCentered" | "pictographic"
+
+--- Display orientation mode for layout containers and dividers.
+--- - `"auto"`: Infers layout perpendicular to the enclosing container.
+--- - `"horizontal"`: Stretches along the horizontal axis.
+--- - `"vertical"`: Stretches along the vertical axis.
+export type UiOrientation = "auto" | "horizontal" | "vertical"
+
+--- Image scaling algorithm within bounded layout dimensions.
+--- - `"contain"`: Scales proportionally to fit entirely inside the container without cropping.
+--- - `"cover"`: Scales proportionally to fill the container, clipping overflow.
+--- - `"stretch"`: Stretches non-proportionally to match explicit node boundaries.
+export type UiImageFit = "contain" | "cover" | "stretch"
 
 -- =============================================================================
 -- Component Property Traits & Configurations
@@ -49,10 +110,10 @@ export type UiFlexProps = UiCommonProps & {
     gap: number?,
 
     --- Cross-axis alignment for children. Columns default to `"stretch"`; rows default to `"stretch"`.
-    align: ("start" | "center" | "end" | "stretch")?,
+    align: UiAlign?,
 
     --- Main-axis distribution for child layout spacing.
-    justify: ("start" | "center" | "end" | "space_between" | "space_around" | "space_evenly")?,
+    justify: UiJustify?,
 
     --- Uniform internal padding in logical px applied to all four edges.
     padding: number?,
@@ -125,13 +186,13 @@ export type UiLabelProps = UiCommonProps & {
     color: string?,
 
     --- Typographic font weight tier.
-    fontWeight: ("thin" | "light" | "normal" | "medium" | "bold" | "black" | "heavy" | string)?,
+    fontWeight: UiFontWeight?,
 
     --- Registered font family name (loaded via `noctalia.loadFont`).
     fontFamily: string?,
 
     --- Baseline metric alignment mode for typography rendering.
-    baseline: ("text" | "textFixedHeight" | "inkCentered" | "pictographic")?,
+    baseline: UiBaseline?,
 
     --- Maximum allowed width constraint in logical px before truncation/wrapping.
     maxWidth: number?,
@@ -140,7 +201,7 @@ export type UiLabelProps = UiCommonProps & {
     maxLines: number?,
 
     --- Text line alignment within the label's bounded width.
-    textAlign: ("start" | "center" | "end")?,
+    textAlign: UiTextAlign?,
 }
 
 --- Formatted Markdown text renderer block properties.
@@ -171,7 +232,7 @@ export type UiImageProps = UiCommonProps & {
     radius: number?,
 
     --- Scaling behavior within layout dimensions.
-    fit: ("contain" | "cover" | "stretch")?,
+    fit: UiImageFit?,
 
     --- Border stroke color surrounding the image boundary.
     border: string?,
@@ -183,7 +244,7 @@ export type UiImageProps = UiCommonProps & {
 --- Visual divider separator line properties.
 export type UiSeparatorProps = UiCommonProps & {
     --- Line direction. When `"auto"`, infers perpendicular axis relative to parent flex container.
-    orientation: ("auto" | "horizontal" | "vertical")?,
+    orientation: UiOrientation?,
 
     --- Thickness of the line stroke in logical px.
     thickness: number?,
@@ -225,13 +286,13 @@ export type UiButtonProps = UiCommonProps & {
     glyphSize: number?,
 
     --- Visual style tier mapping to theme color roles.
-    variant: ("default" | "primary" | "secondary" | "destructive" | "outline" | "ghost")?,
+    variant: UiButtonVariant?,
 
     --- Content alignment inside the button boundary.
-    contentAlign: ("start" | "center" | "end")?,
+    contentAlign: UiTextAlign?,
 
     --- Preset height tier: `"sm"` (32px), `"md"` (38px, default), or `"lg"` (44px).
-    controlSize: ("sm" | "md" | "lg")?,
+    controlSize: UiControlSize?,
 
     --- Hover tooltip message (displayed on bar widgets and panels).
     tooltip: string?,
@@ -291,7 +352,7 @@ export type UiSliderProps = UiCommonProps & {
     value: number,
 
     --- Preset slider thickness / height tier.
-    controlSize: ("sm" | "md" | "lg")?,
+    controlSize: UiControlSize?,
 
     --- Interaction availability flag.
     enabled: boolean?,
@@ -315,7 +376,7 @@ export type UiSelectProps = UiCommonProps & {
     placeholder: string?,
 
     --- Preset height tier: `"sm"`, `"md"`, or `"lg"`.
-    controlSize: ("sm" | "md" | "lg")?,
+    controlSize: UiControlSize?,
 
     --- Interaction availability flag.
     enabled: boolean?,
@@ -336,7 +397,7 @@ export type UiInputProps = UiCommonProps & {
     fontSize: number?,
 
     --- Preset height tier: `"sm"`, `"md"`, or `"lg"`.
-    controlSize: ("sm" | "md" | "lg")?,
+    controlSize: UiControlSize?,
 
     --- Obscures text entries for credential input (mutually exclusive with `multiline`).
     password: boolean?,
@@ -482,4 +543,4 @@ export type Ui = {
     dropZone: (props: UiDropZoneProps, children: { UiNode }?) -> UiNode,
 }
 
-declare ui: Ui
+declare ui: Ui;

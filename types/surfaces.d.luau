@@ -1,13 +1,19 @@
---!nocheck
+--!strict
 -- =============================================================================
 -- Noctalia Surface Controllers & Host Surface Injections
 -- =============================================================================
+
+--- Classification variant for an entry within a native context menu.
+--- - `"item"`: Standard interactive, clickable menu action item.
+--- - `"header"`: Non-interactive section header row for grouping entries.
+--- - `"separator"`: Visual horizontal rule dividing distinct action clusters.
+export type ContextMenuItemKind = "item" | "header" | "separator"
 
 --- Single menu entry descriptor passed to `panel.openContextMenu`.
 --- @since API 28
 export type ContextMenuItem = {
     --- Entry classification. Defaults to `"item"` when omitted.
-    kind: ("item" | "header" | "separator")?,
+    kind: ContextMenuItemKind?,
 
     --- Unique string identifier for action dispatch. Required for clickable `"item"` rows (Max 128 bytes).
     id: string?,
@@ -38,13 +44,28 @@ export type ContextMenuRequest = {
 
 --- Search result item returned by an application launcher provider.
 export type LauncherResult = {
+    --- Unique result identifier used for activation tracking and deduplication.
     id: string,
+
+    --- Primary title text displayed on the search result row.
     title: string,
+
+    --- Secondary description or subtitle metadata displayed under the title.
     subtitle: string?,
+
+    --- Vector glyph icon name (Tabler / Nerd-Font) displayed beside the title.
     glyph: string?,
+
+    --- Local or theme icon path displayed beside the title.
     icon: string?,
+
+    --- Short category tag or status badge text displayed on the right edge.
     badge: string?,
+
+    --- Exact search query term or command line associated with this result.
     query: string?,
+
+    --- Relevance ranking score used for search sorting (higher values appear first).
     score: number?,
 }
 
@@ -88,16 +109,37 @@ export type DesktopWidget = {
 
 --- Surface controller for status bar widget capsules.
 export type BarWidget = {
+    --- Sets the text displayed inside the bar capsule.
     setText: (text: string) -> (),
+
+    --- Sets the vector icon glyph displayed inside the bar capsule.
     setGlyph: (glyph: string) -> (),
+
+    --- Sets the local image path displayed inside the bar capsule.
     setImage: (path: string) -> (),
+
+    --- Displays a hover tooltip string when pointing over the bar widget capsule.
     setTooltip: (tip: string) -> (),
+
+    --- Removes any configured hover tooltip from the bar widget capsule.
     clearTooltip: () -> (),
-    setFont: (family: string, baseline: ("text" | "textFixedHeight" | "inkCentered" | "pictographic")?) -> (),
+
+    --- Configures the font family and baseline alignment for the label text.
+    setFont: (family: string, baseline: UiBaseline?) -> (),
+
+    --- Sets the text and background tint color token or hex string.
     setColor: (color: string) -> (),
+
+    --- Sets the icon glyph stroke color token or hex string.
     setGlyphColor: (color: string) -> (),
+
+    --- Toggles whether the bar widget capsule is visible on the bar surface.
     setVisible: (visible: boolean) -> (),
+
+    --- Returns whether the host bar is oriented vertically instead of horizontally.
     isVertical: () -> boolean,
+
+    --- Returns the DRM connector name of the monitor displaying this bar widget instance.
     outputName: () -> string?,
 
     --- Replaces the built-in imperative label/glyph row with a declarative `ui.*` tree.
@@ -107,20 +149,30 @@ export type BarWidget = {
 
 --- Surface controller for Control Center quick-action shortcut tiles.
 export type Shortcut = {
+    --- Sets the user-visible label displayed below the shortcut tile icon.
     setLabel: (text: string) -> (),
+
+    --- Sets the icon glyph paths or identifiers for both the active and inactive toggle states.
     setIcon: (on: string, off: string?) -> (),
+
+    --- Toggles the active highlight state of the shortcut tile.
     setActive: (bool: boolean) -> (),
+
+    --- Enables or disables user interaction with the shortcut tile.
     setEnabled: (bool: boolean) -> (),
 }
 
 --- Surface controller for application launcher search provider entries.
 export type Launcher = {
+    --- Delivers a list of search matches back to the launcher UI for a given query string.
     setResults: (query: string, results: { LauncherResult }) -> (),
+
+    --- Updates the active search query input string in the launcher search bar.
     setQuery: (query: string) -> (),
 }
 
-declare panel: Panel
-declare desktopWidget: DesktopWidget
-declare barWidget: BarWidget
-declare shortcut: Shortcut
-declare launcher: Launcher
+declare panel: Panel;
+declare desktopWidget: DesktopWidget;
+declare barWidget: BarWidget;
+declare shortcut: Shortcut;
+declare launcher: Launcher;
