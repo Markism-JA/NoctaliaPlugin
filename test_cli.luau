@@ -40,9 +40,20 @@ end
 local function cyan(text: string): string
 	return stdio.color("cyan") .. text .. stdio.color("reset")
 end
+local function green(text: string): string
+	return stdio.color("green") .. text .. stdio.color("reset")
+end
 
-local function magenta(text: string): string
-	return stdio.color("purple") .. text .. stdio.color("reset")
+local function printHeader(title: string)
+	print("\n" .. colorize("bold", "purple", "━━━ ") .. bold(title) .. colorize("bold", "purple", " ━━━"))
+end
+
+local function fatal(msg: string, details: string?)
+	print("\n" .. colorize("bold", "red", " FATAL ") .. " " .. msg)
+	if details then
+		print(dim(details))
+	end
+	process.exit(1)
 end
 
 -- Export cache clearing helper for test isolation
@@ -115,8 +126,8 @@ local function printHelp()
   lune run test_cli [options] [path ...]
 
 %s
-  %s                   Optional spec file(s) or directories to execute.
-                        Defaults to discovering all '*_spec.luau' files.
+  %s                    Optional spec file(s), directory, or partial name filter.
+                        Defaults to traversing the entire repository for '*_spec.luau'.
 
 %s
   %s, %s   Filter test suites and test cases by name.
@@ -145,10 +156,20 @@ end
 -- Path Canonicalization & Spec Discovery
 -- =============================================================================
 
+local IGNORED_DIRECTORIES: { [string]: boolean } = {
+	[".git"] = true,
+	[".luau"] = true,
+	[".github"] = true,
+	["node_modules"] = true,
+	["dist"] = true,
+	["build"] = true,
+	["types"] = true,
+}
+
 local function resolvePath(baseDir: string, relativePath: string): string
 	local fullPath = if baseDir == "" or baseDir == "." then relativePath else baseDir .. "/" .. relativePath
-
 	local parts: { string } = {}
+
 	for segment in string.gmatch(fullPath, "[^/]+") do
 		if segment == ".." then
 			if #parts > 0 and parts[#parts] ~= ".." then
@@ -160,7 +181,6 @@ local function resolvePath(baseDir: string, relativePath: string): string
 			table.insert(parts, segment)
 		end
 	end
-
 	return table.concat(parts, "/")
 end
 
@@ -169,24 +189,105 @@ local function getDirName(filePath: string): string
 	return dir or "."
 end
 
-local function discoverSpecs(dir: string): { string }
+--- Recursively scans any directory, ignoring dependency and metadata subtrees.
+local function discoverSpecs(rootDir: string): { string }
 	local specs: { string } = {}
-	local function scan(currentDir: string)
+
+	local function walk(currentDir: string)
 		if not fs.isDir(currentDir) then
 			return
 		end
+
 		local entries = fs.readDir(currentDir) :: { string }
 		for _, entry: string in ipairs(entries) do
-			local path = currentDir .. "/" .. entry
-			if fs.isDir(path) then
-				scan(path)
-			elseif fs.isFile(path) and string.match(entry, "_spec%.luau$") then
-				table.insert(specs, path)
+			if not IGNORED_DIRECTORIES[entry] and not string.match(entry, "^%.") then
+				local fullPath = if currentDir == "." then entry else currentDir .. "/" .. entry
+
+				if fs.isDir(fullPath) then
+					walk(fullPath)
+				elseif fs.isFile(fullPath) and string.match(entry, "_spec%.luau$") then
+					table.insert(specs, fullPath)
+				end
 			end
 		end
 	end
-	scan(dir)
+
+	walk(rootDir)
+	table.sort(specs)
 	return specs
+end
+
+--- Matches user-supplied CLI targets against files, directories, or partial substrings.
+local function resolveTargets(targets: { string }, allSpecs: { string }): { string }
+	if #targets == 0 then
+		return allSpecs
+	end
+
+	local matchedSpecs: { string } = {}
+	local seen: { [string]: boolean } = {}
+
+	local function addMatch(path: string)
+		if not seen[path] then
+			seen[path] = true
+			table.insert(matchedSpecs, path)
+		end
+	end
+
+	for _, target in ipairs(targets) do
+		local directPath = resolvePath(".", target)
+
+		if fs.isFile(directPath) then
+			addMatch(directPath)
+			continue
+		elseif fs.isFile(directPath .. ".luau") then
+			addMatch(directPath .. ".luau")
+			continue
+		end
+
+		if fs.isDir(directPath) then
+			for _, spec in ipairs(discoverSpecs(directPath)) do
+				addMatch(spec)
+			end
+			continue
+		end
+
+		local pluginCandidate = resolvePath(".", "plugin/" .. target)
+		local libCandidate = resolvePath(".", "lib/" .. target)
+
+		if fs.isDir(pluginCandidate) then
+			for _, spec in ipairs(discoverSpecs(pluginCandidate)) do
+				addMatch(spec)
+			end
+			continue
+		elseif fs.isDir(libCandidate) then
+			for _, spec in ipairs(discoverSpecs(libCandidate)) do
+				addMatch(spec)
+			end
+			continue
+		end
+
+		local pattern = string.lower(target)
+		local foundSubstr = false
+
+		for _, spec in ipairs(allSpecs) do
+			if string.find(string.lower(spec), pattern, 1, true) then
+				foundSubstr = true
+				addMatch(spec)
+			end
+		end
+
+		if not foundSubstr then
+			print(
+				string.format(
+					"%s Target pattern matched no specs: %s",
+					colorize("bold", "yellow", " WARN "),
+					cyan(target)
+				)
+			)
+		end
+	end
+
+	return matchedSpecs
 end
 
 -- =============================================================================
@@ -211,23 +312,23 @@ local function virtualRequire(currentDir: string, importPath: string, runnerConf
 	end
 
 	if not fs.isFile(targetPath) then
-		error(
-			string.format(
-				"%s: '%s' %s",
-				red("Module not found"),
-				importPath,
-				dim(string.format("(resolved to '%s')", targetPath))
-			),
-			2
+		fatal(
+			string.format("Module not found: %s", cyan(importPath)),
+			string.format("Resolved to path: %s\nRequired from: %s", targetPath, currentDir)
 		)
 	end
 
 	local source = fs.readFile(targetPath)
-	local bytecode = luau.compile(source)
+
+	-- DX: Catch syntax errors during compilation gracefully
+	local compileSuccess, bytecode = pcall(luau.compile, source)
+	if not compileSuccess then
+		fatal(string.format("Syntax Error in %s", cyan(targetPath)), tostring(bytecode))
+	end
 
 	local nextDir = getDirName(targetPath)
-
 	local moduleEnv: { [string]: any } = table.clone(getfenv())
+
 	for k, v in pairs(_G) do
 		moduleEnv[k] = v
 	end
@@ -246,12 +347,21 @@ local function virtualRequire(currentDir: string, importPath: string, runnerConf
 		end
 	end
 
-	local moduleFn = luau.load(bytecode, {
+	local loadSuccess, moduleFn = pcall(luau.load, bytecode :: string, {
 		debugName = targetPath,
 		environment = moduleEnv,
 	})
 
-	local result = moduleFn()
+	if not loadSuccess then
+		fatal(string.format("Failed to load module %s", cyan(targetPath)), tostring(moduleFn))
+	end
+
+	-- DX: Catch runtime evaluation errors at the file root
+	local execSuccess, result = pcall(moduleFn :: any)
+	if not execSuccess then
+		fatal(string.format("Runtime Error evaluating %s", cyan(targetPath)), tostring(result))
+	end
+
 	local exported = if result == nil then true else result
 	moduleCache[targetPath] = exported
 	return exported
@@ -268,53 +378,50 @@ if config.help then
 	process.exit(0)
 end
 
-local specFiles: { string } = {}
+-- Inject CLI config globally so the underlying `testing.luau` framework
+-- can respect `--filter` and `--fail-fast` directives.
+(_G :: any).__TEST_RUNNER_CONFIG = config
 
-if #config.targets == 0 then
-	for _, spec in ipairs(discoverSpecs("testing/specs")) do
-		table.insert(specFiles, spec)
-	end
-	for _, spec in ipairs(discoverSpecs("plugins")) do
-		table.insert(specFiles, spec)
-	end
-	for _, spec in ipairs(discoverSpecs("keybind-cheatsheet/tests")) do
-		table.insert(specFiles, spec)
-	end
-else
-	for _, target in ipairs(config.targets) do
-		local resolved = resolvePath(".", target)
-		if not fs.isFile(resolved) and fs.isFile(resolved .. ".luau") then
-			resolved = resolved .. ".luau"
-		end
+local discoveryStart = os.clock()
+local allSpecs = discoverSpecs(".")
+local specFiles = resolveTargets(config.targets, allSpecs)
+local discoveryTime = os.clock() - discoveryStart
 
-		if fs.isFile(resolved) then
-			table.insert(specFiles, resolved)
-		elseif fs.isDir(resolved) then
-			for _, spec in ipairs(discoverSpecs(resolved)) do
-				table.insert(specFiles, spec)
-			end
-		else
-			print(string.format("%s Target not found: %s", colorize("bold", "yellow", " WARN "), cyan(target)))
-			process.exit(1)
-		end
-	end
-end
-
+printHeader("Discovery")
 if #specFiles == 0 then
-	print(
-		string.format(
-			"%s No matching test specification (*_spec.luau) files found.",
-			colorize("bold", "red", " ERROR ")
-		)
-	)
-	process.exit(1)
+	fatal("No matching test specification (*_spec.luau) files found.")
 end
 
 print(
-	string.format("\n%s Discovered %s test suite files", colorize("bold", "cyan", " RUNS "), bold(tostring(#specFiles)))
+	string.format(
+		"Found %s test suites in %s",
+		bold(tostring(#specFiles)),
+		dim(string.format("%.2fms", discoveryTime * 1000))
+	)
 )
 
-local testing: any = virtualRequire(".", "testing/testing.luau", config)
+if config.filter then
+	print(string.format("%s Active spec filter: %s", colorize("bold", "yellow", " ⚑ "), cyan(config.filter)))
+end
+if config.failFast then
+	print(string.format("%s Fail-fast mode enabled", colorize("bold", "yellow", " ⚑ ")))
+end
+
+-- Dynamically resolve testing bootstrap module
+local testingPath = "lib/testing/testing.luau"
+if not fs.isFile(testingPath) then
+	for _, pathCandidate in ipairs({ "testing/testing.luau", "lib/testing.luau" }) do
+		if fs.isFile(pathCandidate) then
+			testingPath = pathCandidate
+			break
+		end
+	end
+end
+
+printHeader("Execution")
+local execStart = os.clock()
+
+local testing: any = virtualRequire(".", testingPath, config)
 
 local bootstrapFn: any = testing.bootstrap
 if typeof(bootstrapFn) == "function" then
@@ -330,6 +437,7 @@ else
 	end
 end
 
+-- Evaluate all discovered spec files to register their tests
 for _, specPath in ipairs(specFiles) do
 	virtualRequire(".", specPath, config)
 end
@@ -340,21 +448,20 @@ if typeof(runFn) ~= "function" and typeof(testing.test) == "table" then
 end
 
 if typeof(runFn) ~= "function" then
-	print(
-		string.format(
-			"%s Could not find test runner function 'test.run()' in testing.luau",
-			colorize("bold", "red", " ERROR ")
-		)
-	)
-	process.exit(1)
+	fatal(string.format("Could not find test runner function 'test.run()' in '%s'", testingPath))
 end
 
-local _passed: number, failed: number = (runFn :: () -> (number, number))()
+-- Execute the test suite
+local passed: number, failed: number = (runFn :: () -> (number, number))()
+local execTime = os.clock() - execStart
 
 local teardownFn: any = testing.teardown
 if typeof(teardownFn) == "function" then
 	(teardownFn :: () -> ())()
 end
+
+-- Final reporting summary
+print(string.format("\n%s Executed in %s", dim("⏱"), bold(string.format("%.2fs", execTime))))
 
 if failed > 0 then
 	process.exit(1)

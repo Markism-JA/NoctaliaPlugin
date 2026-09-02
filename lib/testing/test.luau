@@ -50,7 +50,9 @@ end
 local function red(text: string): string
 	return stdio.color("red") .. text .. stdio.color("reset")
 end
-
+local function yellow(text: string): string
+	return stdio.color("yellow") .. text .. stdio.color("reset")
+end
 local function cyan(text: string): string
 	return stdio.color("cyan") .. text .. stdio.color("reset")
 end
@@ -243,6 +245,10 @@ export type Assertions = {
 --- @param b any Second value to compare.
 --- @param visited { [any]: any } Active pointer map of visited table pairs.
 --- @return boolean True if both values are structurally equivalent.
+local function getRunnerConfig(): any
+	return (_G :: any).__TEST_RUNNER_CONFIG or {}
+end
+
 local function internalDeepCompare(a: any, b: any, visited: { [any]: any }): boolean
 	if a == b then
 		return true
@@ -265,11 +271,10 @@ local function internalDeepCompare(a: any, b: any, visited: { [any]: any }): boo
 	end
 	visited[a] = b
 
-	local countA = 0
+	local countA, countB = 0, 0
 	for _ in pairs(a) do
 		countA += 1
 	end
-	local countB = 0
 	for _ in pairs(b) do
 		countB += 1
 	end
@@ -477,12 +482,22 @@ local suites: { TestSuite } = {}
 --- @param name string Descriptive title of the suite.
 --- @param define (b: SuiteBuilder) -> () Callback receiving the DSL builder.
 function test.suite(name: string, define: (b: SuiteBuilder) -> ())
+	local config = getRunnerConfig()
+	local filter = config.filter and string.lower(config.filter)
+
+	-- If the suite name itself matches the filter, we will automatically allow all child tests
+	local suiteMatches = not filter or string.find(string.lower(name), filter, 1, true) ~= nil
+
 	local cases: { TestCase } = {}
 	local hooks: { beforeEach: (() -> ())?, afterEach: (() -> ())? } = {}
 
 	define({
 		test = function(testName: string, fn: () -> ())
-			table.insert(cases, { name = testName, fn = fn })
+			-- Only include the test if the filter matches the Suite OR the Test Name
+			local testMatches = not filter or string.find(string.lower(testName), filter, 1, true) ~= nil
+			if suiteMatches or testMatches then
+				table.insert(cases, { name = testName, fn = fn })
+			end
 		end,
 		beforeEach = function(fn: () -> ())
 			hooks.beforeEach = fn
@@ -492,12 +507,15 @@ function test.suite(name: string, define: (b: SuiteBuilder) -> ())
 		end,
 	})
 
-	table.insert(suites, {
-		name = name,
-		cases = cases,
-		beforeEach = hooks.beforeEach,
-		afterEach = hooks.afterEach,
-	})
+	-- Only register the suite if there are matching tests to run
+	if #cases > 0 then
+		table.insert(suites, {
+			name = name,
+			cases = cases,
+			beforeEach = hooks.beforeEach,
+			afterEach = hooks.afterEach,
+		})
+	end
 end
 
 --- Purges all currently queued test suites from memory.
@@ -517,6 +535,9 @@ end
 ---
 --- @return (number, number) Returns a `(passedCount, failedCount)` tuple.
 function test.run(): (number, number)
+	local config = getRunnerConfig()
+	local failFast = config.failFast == true
+
 	local passed = 0
 	local failed = 0
 	local startTime = os.clock()
@@ -525,8 +546,15 @@ function test.run(): (number, number)
 	print(bold(cyan(" NOCTALIA TEST RUNNER")))
 	print(cyan("============================================================"))
 
+	local abortExecution = false
+
 	for _, suite in ipairs(suites) do
+		if abortExecution then
+			break
+		end
+
 		print(string.format("\n%s %s", bold(magenta("[Suite]")), bold(suite.name)))
+
 		for _, tc in ipairs(suite.cases) do
 			local testFailed = false
 			local failureReason = ""
@@ -560,6 +588,11 @@ function test.run(): (number, number)
 				print(
 					string.format("  %s %s\n    └─ %s", bold(red("✗ [FAIL]")), bold(tc.name), red(failureReason))
 				)
+
+				if failFast then
+					abortExecution = true
+					break
+				end
 			else
 				passed += 1
 				print(string.format("  %s %s", bold(green("✓ [PASS]")), dim(tc.name)))
@@ -569,6 +602,11 @@ function test.run(): (number, number)
 
 	local durationMs = (os.clock() - startTime) * 1000
 	print(dim("\n------------------------------------------------------------"))
+
+	if abortExecution then
+		print(bold(yellow(" ⚑ Execution aborted early due to --fail-fast")))
+	end
+
 	if failed == 0 then
 		print(bold(green(string.format(" RESULTS: %d Passed, %d Failed (%.2f ms)", passed, failed, durationMs))))
 	else
