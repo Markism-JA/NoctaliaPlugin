@@ -414,17 +414,27 @@ end
 
 local function updateColumnCountCache()
 	local configured = math.clamp(stl.config.getNumber("columns", 3), 1, 4)
-	local outputWidth = 1920
+
+	-- The panel width defined in plugin.toml
+	local panelWidth = 1500
+
+	-- Only drop below panelWidth if the physical monitor is narrower than the panel
 	if noctalia and noctalia.focusedOutputName and noctalia.outputs then
 		local focused = noctalia.focusedOutputName()
 		for _, output in ipairs(noctalia.outputs()) do
 			if output.name == focused or output.focused then
-				outputWidth = output.width / math.max(output.scale or 1, 1)
+				local logicalMonitorWidth = output.width / math.max(output.scale or 1, 1)
+				-- Avoid tiny fallback heads (< 800) overriding the real display
+				if logicalMonitorWidth >= 800 then
+					panelWidth = math.min(panelWidth, logicalMonitorWidth)
+				end
 				break
 			end
 		end
 	end
-	local responsive = outputWidth < 760 and 1 or (outputWidth < 1100 and 2 or (outputWidth < 1500 and 3 or 4))
+
+	local responsive = if panelWidth < 760 then 1 elseif panelWidth < 1100 then 2 elseif panelWidth < 1400 then 3 else 4
+
 	cachedColumnCount = math.min(configured, responsive)
 end
 
